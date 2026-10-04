@@ -1,0 +1,55 @@
+# Bundle patch for @local/dsh-compaction-guard.
+#
+# Two independent guards, each replacing a shipped compaction plugin:
+#
+#   engine.js  replaces @deepseek-ai/dsh-compaction-basic
+#   pruner.js  replaces @deepseek-ai/dsh-compaction-tool-result-pruner
+#
+# The loader dialect asserts an existing row's name rather than renaming it, so
+# the swap is disable + insert. What actually takes effect is the service
+# identity each plugin provides (`ctx.compaction`, `ctx.toolResultPruner`), not
+# the row id.
+#
+# Both replacement classes extend the shipped classes and delegate to them; this
+# plugin only refuses two specific bad outcomes. It changes no threshold, no
+# retention policy and no pricing. Removing the `disabled` flags below restores
+# the shipped behaviour exactly.
+#
+# Row names are relative paths, which the dialect anchors beside this patch file.
+
+# --- Case 1: a degenerate summary must not be committed ---------------------
+- id: compaction-basic
+  disabled: true
+
+# --- Case 2: no mid-turn rewrite on a delivered-prefix provider -------------
+- id: tool-result-pruner
+  disabled: true
+
+- insert:
+    - id: compaction-guard-engine
+      name: './engine.js'
+      config:
+        # Substance floor. The observed failure was a 31-character non-answer
+        # replacing 1840 events; the shipped size-only check accepted it.
+        minSummaryChars: 400
+        # Relative floor, deliberately disabled: a good summary of a huge
+        # conversation is legitimately far smaller than its input, so this
+        # rejects valid output when set carelessly.
+        minRatio: 0
+        rejectPatterns: []
+        # Bounded retries before refusing the compaction outright.
+        maxDegenerateRetries: 2
+
+    - id: compaction-guard-pruner
+      name: './pruner.js'
+      config:
+        # Restated because a row's config replaces the shipped row's config
+        # wholesale; these are the values the base bundle used.
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
+        # Defer a prune pass while the surface is mid-turn on a provider that
+        # pins a tool continuation to the history it already delivered.
+        deferWhenBatchPending: true
+        contractProviders:
+          - meridian-antigravity

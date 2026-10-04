@@ -130,13 +130,31 @@
               compaction: true
               toolResultPruner: true
             config:
+              # Guarded replacements for the shipped pair. This group isolates
+              # `compaction` and `toolResultPruner` (see `isolate` above), so a
+              # provider mounted at the host plane is a different realm and
+              # cannot reach these sessions: the guard has to be mounted here.
+              # See plugins/dsh-compaction-guard/README.md.
               - id: compaction-basic
-                name: '@deepseek-ai/dsh-compaction-basic'
+                name: 'file:///export/DownloadsSSD/SHARED/harnesses/dsh/plugins/dsh-compaction-guard/engine.js'
+                config:
+                  # Substance floor: the observed failure was a 31-character
+                  # non-answer replacing 1840 events.
+                  minSummaryChars: 400
+                  # Relative floor, deliberately off; see the guard's README.
+                  minRatio: 0
+                  rejectPatterns: []
+                  maxDegenerateRetries: 2
               - id: command-compact
                 name: '@deepseek-ai/dsh-command-compact'
               - id: tool-result-pruner
-                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                name: 'file:///export/DownloadsSSD/SHARED/harnesses/dsh/plugins/dsh-compaction-guard/pruner.js'
                 config:
                   thresholdChars: 8192
                   headChars: 4096
                   tailChars: 1024
+                  # Do not rewrite the surface mid-turn on a provider that pins
+                  # a tool continuation to the history it already delivered.
+                  deferWhenBatchPending: true
+                  contractProviders:
+                    - meridian-antigravity

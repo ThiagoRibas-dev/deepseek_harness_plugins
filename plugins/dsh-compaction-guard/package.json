@@ -1,0 +1,21 @@
+{
+  "name": "@local/dsh-compaction-guard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Two compaction guards: reject a degenerate summary before it is committed, and defer tool-result pruning while a provider holds a delivered-prefix tool continuation.",
+  "meta": {
+    "title": "Compaction Guard",
+    "description": "Guards against the two destructive compaction outcomes observed in session-293cca94."
+  },
+  "exports": {
+    ".": "./engine.js",
+    "./pruner": "./pruner.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
