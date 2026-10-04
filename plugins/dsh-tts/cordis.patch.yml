@@ -1,0 +1,23 @@
+# Profile-global TTS. Mounted at the Host level rather than inside an agent
+# preset: a voice has nothing to do with any one agent, and every session in the
+# profile should get it.
+#
+# `dataRoot` is where the pinned model lives. It defaults to `$DSH_HOME/tts`, so
+# weights stay out of the workspace and out of git — the graph is 92 MB and the
+# voice files are ~0.5 MB each.
+- insert:
+    - id: tts
+      name: 'file:///export/DownloadsSSD/SHARED/harnesses/dsh/plugins/dsh-tts/plugin.js'
+      config:
+        dataRoot: !!js dshHomePath('tts')
+        voice: af_heart
+        speed: 1
+        # Profile-level default for auto-speak. A chat inherits this until it is
+        # toggled for itself; the per-chat override is a session projection, not
+        # a config field, because config is profile-global.
+        autoEnabled: false
+        # Standing delivery direction, compiled into voice + speed. Anything
+        # Kokoro cannot express is reported rather than silently dropped.
+        instructions: ''
+        # Read the text itself for pace cues (punctuation, capitals, sentence length).
+        toneEnabled: true

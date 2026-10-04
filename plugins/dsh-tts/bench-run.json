@@ -1,0 +1,35 @@
+{
+  "label": "run",
+  "when": "2026-10-03T18:50:51.101Z",
+  "base": "http://openmediavault:3080/v1/audio",
+  "text": "The gate is barred. Nothing breathes.",
+  "threads": 1,
+  "results": {
+    "kokoro": {
+      "seconds": 3.05,
+      "inferredMs": 7930,
+      "segments": 1,
+      "rtf": 2.6,
+      "samples": [
+        8600,
+        7982,
+        7930
+      ],
+      "voice": "af_bella",
+      "phase": "ready"
+    },
+    "piper": {
+      "seconds": 2.12,
+      "inferredMs": 4492,
+      "segments": 1,
+      "rtf": 2.1188679245283017,
+      "samples": [
+        4492,
+        5024,
+        4943
+      ],
+      "voice": "en_US-lessac-high",
+      "phase": "ready"
+    }
+  }
+}

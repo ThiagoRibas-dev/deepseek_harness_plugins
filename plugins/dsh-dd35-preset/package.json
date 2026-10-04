@@ -1,0 +1,7 @@
+{
+  "name": "@local/dsh-dd35-preset",
+  "version": "1.0.1",
+  "private": true,
+  "type": "module",
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}

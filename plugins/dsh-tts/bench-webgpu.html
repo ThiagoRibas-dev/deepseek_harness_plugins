@@ -1,0 +1,154 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Kokoro on the iGPU — browser WebGPU vs WASM</title>
+<style>
+  body { background:#111; color:#ddd; font:14px/1.5 ui-monospace, monospace; padding:24px; max-width:900px }
+  h1 { font-size:16px; font-weight:600 }
+  table { border-collapse:collapse; margin:12px 0 }
+  td, th { border:1px solid #333; padding:4px 10px; text-align:right }
+  td:first-child, th:first-child { text-align:left }
+  .note { color:#888 }
+  .err { color:#f85149; white-space:pre-wrap }
+  .good { color:#3fb950 }
+</style>
+<h1>Kokoro inference: WebGPU (iGPU via Vulkan) vs WASM (CPU)</h1>
+<p class="note">
+  Serve the model directory and open this page from it, so the browser can fetch the model:<br>
+  <code>cd ~/.dsh/tts/models/kokoro/1939ad2a8e41 &amp;&amp; python3 -m http.server 8000 --bind 127.0.0.1</code><br>
+  then open <code>http://127.0.0.1:8000/bench-webgpu.html</code>.
+</p>
+<p class="note">
+  This measures <strong>throughput only</strong>: the token ids and the style vector are synthetic,
+  because generating real ones needs the phonemizer and tokenizer. Same tensor shapes and the same
+  kernels as real text, so the timing is meaningful; the audio it would produce is not.
+</p>
+<div id="out"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.0/dist/ort.webgpu.min.js"></script>
+<script>
+const out = document.getElementById('out')
+const line = (html, cls) => { const p = document.createElement('p'); if (cls) p.className = cls; p.innerHTML = html; out.appendChild(p) }
+
+// One model at a time, smallest first, so a memory-limited tab still produces a number.
+const MODELS = [
+  { key: 'q8f16', path: 'onnx/model_q8f16.onnx' },
+  { key: 'q8',    path: 'onnx/model_quantized.onnx' },
+  { key: 'fp16',  path: 'onnx/model_fp16.onnx' },
+]
+const TOKENS = 346      // matches the Node benchmark's long passage
+const RUNS = 3
+const SAMPLE_RATE = 24000
+
+/**
+ * Synthetic inputs with the real shapes.
+ *
+ * Token ids are drawn from the model's vocabulary range and the style vector is a flat
+ * 256-float vector — the same length the voice file's rows have. The kernels and tensor
+ * shapes are identical to a real utterance, so the measurement transfers; only the
+ * waveform is meaningless, and this page never plays it.
+ */
+function inputs() {
+  const ids = new BigInt64Array(TOKENS)
+  for (let i = 0; i < TOKENS; i += 1) ids[i] = BigInt(1 + (i * 37) % 170)
+  const style = new Float32Array(256)
+  for (let i = 0; i < 256; i += 1) style[i] = Math.sin(i / 7) * 0.4
+  return { ids, style }
+}
+
+/** One provider's worth of measurement for one model. */
+async function measure(ort, buffer, provider) {
+  const session = await ort.InferenceSession.create(buffer, {
+    executionProviders: [provider],
+    graphOptimizationLevel: 'all',
+  })
+  const { ids, style } = inputs()
+  const feeds = {
+    input_ids: new ort.Tensor('int64', ids, [1, ids.length]),
+    style: new ort.Tensor('float32', style, [1, 256]),
+    speed: new ort.Tensor('float32', Float32Array.from([1]), [1]),
+  }
+  // Warm-up outside the timing: the first call pays for shader compilation or buffer
+  // setup, which is a one-off cost and would otherwise dominate a three-run average.
+  const warm = await session.run(feeds)
+  const samples = (warm.waveform ?? Object.values(warm)[0]).data.length
+
+  let best = Infinity
+  for (let run = 0; run < RUNS; run += 1) {
+    const started = performance.now()
+    await session.run(feeds)
+    best = Math.min(best, performance.now() - started)
+  }
+  const seconds = samples / SAMPLE_RATE
+  return { provider, ms: best, seconds, rtf: best / 1000 / seconds, samples }
+}
+
+async function main() {
+  if (typeof ort === 'undefined') {
+    line('onnxruntime-web did not load from the CDN. Check the network, or adjust the version in the script tag.', 'err')
+    return
+  }
+  // The wasm backend needs its own runtime files, which the CDN also serves.
+  ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.0/dist/'
+
+  let providers = ['wasm']
+  if (navigator.gpu === undefined) {
+    line('navigator.gpu is missing, so this browser has no WebGPU. On Chrome/Linux that usually means '
+      + 'either the version predates it or Vulkan is unavailable — check <code>chrome://gpu</code>, and '
+      + 'try launching with <code>--enable-unsafe-webgpu</code>. The WASM numbers below still run.', 'err')
+  } else {
+    const adapter = await navigator.gpu.requestAdapter().catch(() => null)
+    if (adapter === null) {
+      line('navigator.gpu exists but no adapter came back — usually no Vulkan driver. Check '
+        + '<code>chrome://gpu</code> for the WebGPU status and the reason.', 'err')
+    } else {
+      providers = ['webgpu', 'wasm']
+      const info = adapter.info ?? {}
+      line(`WebGPU adapter: <strong>${info.vendor ?? '?'} ${info.architecture ?? ''} ${info.description ?? ''}</strong>`)
+    }
+  }
+
+  for (const model of MODELS) {
+    let buffer
+    try {
+      const response = await fetch(model.path)
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
+      buffer = await response.arrayBuffer()
+    } catch (error) {
+      line(`${model.key}: could not fetch ${model.path} — ${error.message}`, 'err')
+      continue
+    }
+    line(`<strong>${model.key}</strong> — ${(buffer.byteLength / 1048576).toFixed(0)} MB, ${TOKENS} tokens`)
+
+    const table = document.createElement('table')
+    table.innerHTML = '<tr><th>provider</th><th>wall ms</th><th>audio s</th><th>RTF</th></tr>'
+    for (const provider of providers) {
+      try {
+        const result = await measure(ort, buffer, provider)
+        const row = table.insertRow()
+        row.insertCell().textContent = provider
+        row.insertCell().textContent = Math.round(result.ms)
+        row.insertCell().textContent = result.seconds.toFixed(1)
+        const rtf = row.insertCell()
+        rtf.textContent = result.rtf.toFixed(2)
+        if (result.rtf < 1) rtf.className = 'good'
+      } catch (error) {
+        const row = table.insertRow()
+        row.insertCell().textContent = provider
+        const cell = row.insertCell()
+        cell.colSpan = 3
+        cell.className = 'err'
+        cell.textContent = String(error.message ?? error)
+      }
+    }
+    out.appendChild(table)
+    if (providers.includes('webgpu') && providers.includes('wasm')) {
+      line('<span class="note">RTF under 1 is faster than real time. Compare against the Node benchmark: '
+        + 'CPU WASM here should land near 2.6–3.0, the same as onnxruntime-node.</span>')
+    }
+  }
+  line('<span class="note">Done. A WebGPU RTF below about 0.7 would make Kokoro usable live — that is '
+    + 'the number worth having, not merely one that beats the CPU.</span>')
+}
+
+main().catch((error) => line(String(error.stack ?? error), 'err'))
+</script>

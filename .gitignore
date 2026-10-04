@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Local scratch checkouts and preserved nested histories (never published)
+.scratch-*/
+.git-backups/
+
+# Local runtime data
+.dsh-tts/
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+*.swp
+*~

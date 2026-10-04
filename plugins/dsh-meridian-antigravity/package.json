@@ -1,0 +1,32 @@
+{
+  "name": "@local/dsh-meridian-antigravity",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Meridian Antigravity model API connector for the DeepSeek Harness: an Anthropic Messages adapter that honors the Meridian agent-harness contract (fail-closed health gate, live account catalogue, slug-as-effort, held tool blocks, content-addressed idempotency, and replay-only recovery).",
+  "meta": {
+    "title": "Meridian Antigravity",
+    "description": "Messages-route model connector for a local Meridian bridge over a signed-in agy CLI."
+  },
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-settings-models"
+      ],
+      "external": [
+        "react"
+      ]
+    }
+  }
+}

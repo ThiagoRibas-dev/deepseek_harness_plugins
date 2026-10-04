@@ -1,0 +1,27 @@
+# Bundle patch for @local/dsh-meridian-antigravity.
+#
+# This inserts one row: the Meridian Antigravity Messages adapter. It registers
+# the provider route named by `provider` (default `meridian-antigravity`) on the
+# harness `llm` service. Nothing else in the profile is touched, so the generic
+# `antigravity` route served by @deepseek-ai/dsh-llm-pi-ai keeps working until
+# you point `agent-default-model` (or a per-session model selection) at the new
+# route yourself.
+#
+# Values below are the ones verified live against Meridian 1.76.1 with
+# official agy 1.2.7 on the OpenMediaVault unit.
+- insert:
+    - id: llm-meridian-antigravity
+      name: '@local/dsh-meridian-antigravity'
+      config:
+        # Meridian origin (no /v1 suffix: the adapter appends the route itself).
+        baseURL: http://openmediavault:3457
+        # Credential reference resolved per request through the credentials seam,
+        # then the launching environment. The value is the local Meridian shared
+        # secret, not a Google or Anthropic key.
+        apiKeyEnv: ANTIGRAVITY_API_KEY
+        displayName: Meridian Antigravity
+        # Fail closed: refuse to serve if the process behind baseURL is not the
+        # Antigravity backend on the pinned CLI version.
+        requireHealthGate: true
+        expectedBackend: antigravity
+        expectedCliVersion: 1.2.7
