@@ -178,7 +178,7 @@ call is awaiting a result.
 
 ## Tests
 
-`./tests/run.sh` runs four offline suites — no live service and no subscription quota:
+`./tests/run.sh` runs five offline suites — no live service and no subscription quota:
 
 - `tests/conformance.mjs` — 53 checks against a scriptable fake Meridian over loopback (health gate,
   catalogue, request shape, tool holding, recovery, identity, error policy, injected-notice filtering,
@@ -200,6 +200,8 @@ The runner builds a throwaway module-resolution rig, because a profile-installed
 $ ./tests/run.sh
 ...
 9 passed, 0 failed
+
+serialize-compaction: ok
 
 53 passed, 0 failed
 ```
