@@ -330,9 +330,11 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      // `remote.credentials`/`remote.llm` are declared so the proxies exist on
-      // this context; `configForms` owns the revision-fenced write queue.
-      inject: ['slots', 'configForms', 'remote.credentials', 'remote.llm'],
+      // `remote` and each declared sub-proxy are both required: reading
+      // `ctx.remote.credentials` reads `ctx.remote` first, and that read is
+      // refused unless `remote` itself is injected. `configForms` owns the
+      // revision-fenced write queue.
+      inject: ['slots', 'configForms', 'remote', 'remote.credentials', 'remote.llm'],
       apply(ctx) {
         ctx.slots.inject('settings.models.provider-card', () => ctx.slots.register({
           name: 'settings.models.provider-card',

@@ -97,7 +97,17 @@ test('registers the module under the package name', () => {
 const module = loaded.factory(requireShim)
 
 test('declares the client services the card reads', () => {
-  assert.deepEqual(module.inject, ['slots', 'configForms', 'remote.credentials', 'remote.llm'])
+  assert.deepEqual(module.inject, ['slots', 'configForms', 'remote', 'remote.credentials', 'remote.llm'])
+  // Reaching `ctx.remote.credentials` reads `ctx.remote` first, and that read is
+  // refused unless `remote` itself is injected. Asserting the list alone let
+  // that mistake through once, so assert the rule as well.
+  const proxies = module.inject.filter(entry => entry.startsWith('remote.'))
+  if (proxies.length > 0) {
+    assert.ok(
+      module.inject.includes('remote'),
+      `injecting ${proxies.join(', ')} also requires injecting "remote"`,
+    )
+  }
 })
 
 test('registers into the keyed provider-card slot under its settings namespace', () => {
