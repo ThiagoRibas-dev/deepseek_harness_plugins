@@ -17,6 +17,7 @@
  */
 
 import { LlmError, offloadedImageText, projectOffloadedImages } from '@deepseek-ai/dsh-llm'
+import { remapToolIds } from './compaction-ids.js'
 import { effortOfSlug } from './config.js'
 
 /** Meridian enforces at most four stop sequences of at most 1024 characters. */
@@ -117,8 +118,10 @@ function restoreTrailingNotice(wire, dropped) {
  * @param sessionKey - harness session id sent as Meridian's `meridian_session_key`,
  *   which is part of Meridian's execution contract and so keeps two sessions with
  *   identical history from being treated as one live conversation.
- * @returns the Messages body (without `stream`), plus the image occurrences and
- *   their encoded sizes so the caller can enforce the byte budget precisely.
+ * @returns the Messages body (without `stream`), the image occurrences and
+ *   their encoded sizes so the caller can enforce the byte budget precisely, and
+ *   for a compaction call the number of tool ids re-derived to break Meridian's
+ *   association with a delivered run.
  */
 export function serializeRequest({ options, connection, images, imageAccess, warn, sessionKey }) {
   if (options.model.length === 0) throw new LlmError('Meridian Antigravity needs a model slug', 'INVALID_REQUEST')
@@ -133,9 +136,19 @@ export function serializeRequest({ options, connection, images, imageAccess, war
   const effort = resolveEffort(options)
   const system = collectSystem(options)
   const retained = []
-  const messages = buildMessages({ options: { ...options, messages: history }, connection, images, imageAccess, retained })
-  restoreTrailingNotice(messages, dropped)
+  const built = buildMessages({ options: { ...options, messages: history }, connection, images, imageAccess, retained })
+  restoreTrailingNotice(built, dropped)
   const stop = resolveStop(options.stop)
+
+  // A compaction call replays conversation messages, so it carries tool ids
+  // Meridian handed out when it delivered those calls. Meridian looks a
+  // request's tool results up by id, and any hit makes it demand that the
+  // request be that run's exact tool continuation — which a replay is not, so
+  // it is refused. The ids mean nothing to a summarisation, so they are
+  // re-derived to break the association. Conversation traffic is untouched.
+  const compaction = options.purpose === 'compaction'
+  const remap = compaction ? remapToolIds(built) : undefined
+  const messages = remap === undefined ? built : remap.messages
 
   const body = {
     model: options.model,
@@ -146,7 +159,10 @@ export function serializeRequest({ options, connection, images, imageAccess, war
     // live CLI conversation.
     ...sessionKey === undefined || sessionKey.length === 0 ? {} : { meridian_session_key: sessionKey },
     ...system.length === 0 ? {} : { system },
-    ...tools === undefined ? {} : { tools },
+    // A summarisation has nothing to call, and advertising the conversation's
+    // tools invites the summarising model to call one instead of writing the
+    // summary.
+    ...tools === undefined || compaction ? {} : { tools },
     ...stop === undefined ? {} : { stop_sequences: stop },
     // The slug already selects the effort; only an explicitly configured
     // deployment sends the matching override, and only when it matches.
@@ -160,7 +176,7 @@ export function serializeRequest({ options, connection, images, imageAccess, war
     warn?.(`Meridian Antigravity ignores reasoning effort ${JSON.stringify(String(options.reasoningEffort))}: this slug takes no effort override. Select the effort by slug instead.`)
   }
 
-  return { body, retained }
+  return { body, retained, compactionRemapped: remap?.remapped }
 }
 
 /** Output instruction. Meridian copies this into the prompt; it is not a cap. */

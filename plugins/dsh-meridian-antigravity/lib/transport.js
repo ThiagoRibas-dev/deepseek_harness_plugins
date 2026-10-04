@@ -39,7 +39,7 @@ export async function* runTurn(dependencies, options) {
   // identical bytes are two logical turns, and Meridian keys both its saved
   // answers and its live-conversation reuse on the identity this adapter sends.
   const scope = typeof options.sessionId === 'string' ? options.sessionId : ''
-  const { body, retained } = serializeRequest({
+  const { body, retained, compactionRemapped } = serializeRequest({
     options,
     connection,
     images: dependencies.images,
@@ -47,6 +47,15 @@ export async function* runTurn(dependencies, options) {
     warn,
     sessionKey: scope,
   })
+  // Diagnostic: if a compaction call is still refused by Meridian, this line
+  // says whether the re-derivation ran and how much it covered, which separates
+  // "the rewrite did not reach the wire" from "Meridian matched the ids anyway".
+  if (compactionRemapped !== undefined) {
+    logger?.info?.(
+      `meridian-antigravity: compaction call re-derived ${compactionRemapped} tool id(s) `
+      + 'so Meridian cannot match them to a delivered run',
+    )
+  }
   const streamingBody = { ...body, stream: true }
   const size = enforceRequestBudget({ body: streamingBody, retained }, connection)
   const hash = logicalRequestHash(body, scope)

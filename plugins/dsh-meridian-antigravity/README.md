@@ -141,9 +141,27 @@ The client half is plain JavaScript in the module-loader format, uses only `--ds
 tokens, and imports no Harness Client package. It needs one page refresh after installation, because
 the browser boots from the module graph embedded in the served HTML.
 
+### Compaction calls
+
+Summarization is a replay, not a new question: the harness re-sends part of the conversation with an
+instruction appended. That replay carries the tool ids Meridian handed out when it delivered those
+calls, and Meridian looks a request's tool results up by id and treats a hit as that run's tool
+continuation, which it then requires to match the delivered batch and history exactly. A replay never
+can, so compaction was refused with `Pending Antigravity tool continuation changed its delivered
+history or tool batch` every time.
+
+This connector therefore re-derives the tool ids on calls the harness marks `purpose: 'compaction'`,
+and drops the advertised tools, since a summarization has nothing to call. Conversation traffic is
+untouched. The replacement ids are a hash of the originals rather than fresh values, because the
+`idempotency-key` header is a hash of the request bytes and Meridian refuses an id that arrives with
+different bytes; a stable derivation keeps one logical compaction call byte-identical across retries.
+
+The diagnostic line `compaction call re-derived N tool id(s)` is logged for each such call, so a
+remaining failure can be told apart from a rewrite that never reached the wire.
+
 ## Tests
 
-`./tests/run.sh` runs two offline suites — no live service and no subscription quota:
+`./tests/run.sh` runs four offline suites — no live service and no subscription quota:
 
 - `tests/conformance.mjs` — 53 checks against a scriptable fake Meridian over loopback (health gate,
   catalogue, request shape, tool holding, recovery, identity, error policy, injected-notice filtering,
@@ -151,6 +169,11 @@ the browser boots from the module graph embedded in the served HTML.
 - `tests/client.mjs` — 9 checks on the client half: the module-loader contract, the slot key and
   registration options, and the card's first render under a minimal React shim (every field, the
   inactive and keyless states, the overridden marker, and the unwritable namespace).
+- `tests/serialize-compaction.mjs` — that a compaction call reaches the wire with re-derived, paired
+  ids and no tools, that a conversation call is byte-identical to before, and that serialization is
+  stable across attempts.
+- `tests/compaction-ids.test.js` — 10 checks on the rewriting itself, runnable standalone with
+  `node --test tests/compaction-ids.test.js` since the module imports only `node:crypto`.
 
 The runner builds a throwaway module-resolution rig, because a profile-installed plugin resolves
 `@deepseek-ai/*` through the harness loader, which plain Node does not provide.

@@ -35,4 +35,6 @@ done
 cd "$RIG"
 node plugin/tests/client.mjs "$@"
 echo
+node plugin/tests/serialize-compaction.mjs "$@"
+echo
 exec node plugin/tests/conformance.mjs "$@"
