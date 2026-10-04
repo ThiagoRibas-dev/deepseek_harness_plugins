@@ -85,4 +85,35 @@ assert.equal(
   'compaction serialization must be byte-stable across attempts',
 )
 
+// The continuation diagnosis must survive serialization, because the transport
+// attaches it to a transcript-conflict failure. The batch below was issued by
+// another provider, which is the case Meridian cannot continue.
+const foreign = serializeRequest({
+  options: {
+    model: 'claude-sonnet-5-5-medium',
+    tools: TOOLS,
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'go' }] },
+      {
+        role: 'assistant',
+        source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-flash' },
+        content: [{ type: 'tool-call', id: 'call_00_foreign', name: 'bash', arguments: '{}' }],
+      },
+      {
+        role: 'tool',
+        toolCallId: 'call_00_foreign',
+        source: { kind: 'tool', callId: 'call_00_foreign' },
+        content: [{ type: 'text', text: 'ok' }],
+      },
+    ],
+  },
+  connection,
+  images: undefined,
+  imageAccess: undefined,
+  warn: () => {},
+  sessionKey: 'session-serialize-continuation',
+})
+assert.equal(foreign.continuation?.foreign?.length, 1, 'a foreign batch must be diagnosed')
+assert.equal(foreign.continuation.foreign[0].provider, 'deepseek-official')
+
 console.log('serialize-compaction: ok')

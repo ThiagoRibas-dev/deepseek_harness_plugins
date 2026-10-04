@@ -13,6 +13,7 @@
 import { LlmError, attributionHeaders } from '@deepseek-ai/dsh-llm'
 import { meridianErrorFromText, streamInterrupted } from './errors.js'
 import { enforceRequestBudget, serializeRequest } from './serialize.js'
+import { continuationHint } from './continuation.js'
 import { logicalRequestHash } from './idempotency.js'
 import { MeridianTranslator, parseSse } from './stream.js'
 
@@ -39,7 +40,7 @@ export async function* runTurn(dependencies, options) {
   // identical bytes are two logical turns, and Meridian keys both its saved
   // answers and its live-conversation reuse on the identity this adapter sends.
   const scope = typeof options.sessionId === 'string' ? options.sessionId : ''
-  const { body, retained, compactionRemapped } = serializeRequest({
+  const { body, retained, compactionRemapped, continuation } = serializeRequest({
     options,
     connection,
     images: dependencies.images,
@@ -78,7 +79,7 @@ export async function* runTurn(dependencies, options) {
     const key = await resolveApiKey(connection)
     const translator = new MeridianTranslator()
     try {
-      const response = await dispatch(connection, streamingBody, headers, key, idle)
+      const response = await dispatch(connection, streamingBody, headers, key, idle, continuation)
       translator.markReplayed(response.headers.get('x-meridian-response-replayed') === 'true')
       const effective = response.headers.get('x-meridian-effective-model')
       if (effective !== null && effective !== options.model) {
@@ -173,7 +174,7 @@ async function recover({ connection, contract, translator, body, headers, key, s
 }
 
 /** POST the streaming turn and classify a non-2xx without retrying generation. */
-async function dispatch(connection, body, headers, key, idle) {
+async function dispatch(connection, body, headers, key, idle, diagnosis) {
   let response
   try {
     response = await fetch(`${connection.baseURL}/v1/messages`, {
@@ -196,7 +197,33 @@ async function dispatch(connection, body, headers, key, idle) {
   }
   if (response.ok) return response
   const text = await response.text()
-  throw meridianErrorFromText(response.status, response.headers, text)
+  throw withContinuationHint(meridianErrorFromText(response.status, response.headers, text), diagnosis)
+}
+
+/**
+ * Attach the continuation diagnosis to a transcript-conflict failure.
+ *
+ * Meridian reports a continuation it cannot recognise with the same 409 it uses
+ * for a genuinely rewritten transcript, so the provider message alone points the
+ * reader at the wrong cause. When this request's trailing tool results were
+ * issued by another provider, say so on the error.
+ *
+ * @param error - the classified failure.
+ * @param diagnosis - the continuation analysis recorded at serialization.
+ * @returns the error, or a copy carrying the explanation.
+ */
+function withContinuationHint(error, diagnosis) {
+  const hint = continuationHint(diagnosis)
+  if (hint === undefined || !(error instanceof LlmError)) return error
+  const failure = error.failure
+  // Only the deterministic continuation conflict is explained this way. The
+  // replayable and uncertain-outcome classes have their own causes.
+  if (failure?.code !== 'MERIDIAN_CONTINUATION_CONFLICT') return error
+  return new LlmError(`${failure.message}${hint}`, failure.code, {
+    ...failure.status === undefined ? {} : { status: failure.status },
+    ...failure.providerRetryAfterMs === undefined ? {} : { providerRetryAfterMs: failure.providerRetryAfterMs },
+    ...failure.requestId === undefined ? {} : { requestId: failure.requestId },
+  })
 }
 
 /** Failures a same-identity re-ask can plausibly resolve. */

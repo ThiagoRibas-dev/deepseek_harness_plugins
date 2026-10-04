@@ -159,6 +159,23 @@ different bytes; a stable derivation keeps one logical compaction call byte-iden
 The diagnostic line `compaction call re-derived N tool id(s)` is logged for each such call, so a
 remaining failure can be told apart from a rewrite that never reached the wire.
 
+### A continuation issued by another provider
+
+Meridian can only continue a tool batch it delivered: it looks the request's trailing tool results up
+by id and accepts only ids it issued. When the model is changed while a tool batch is open, the batch
+was issued by the previous provider and the harness routes its continuation to the newly selected one,
+so the request cannot succeed. Meridian answers with the same 409 it uses for a genuinely rewritten
+transcript, which points the reader at the wrong cause.
+
+The connector cannot prevent this, because the routing decision is made before the request reaches it.
+It can explain it: `lib/continuation.js` records, at serialization, any trailing tool result whose id
+is not one of Meridian's (`toolu_agy_` prefixed) together with the provider that issued it, read from
+the assistant message that made the call. When that request then fails as a transcript conflict, the
+error carries the explanation, naming the issuing provider and the offending ids.
+
+The remedy is to let the batch finish on the provider that issued it, or to switch models when no tool
+call is awaiting a result.
+
 ## Tests
 
 `./tests/run.sh` runs four offline suites — no live service and no subscription quota:
@@ -174,6 +191,7 @@ remaining failure can be told apart from a rewrite that never reached the wire.
   stable across attempts.
 - `tests/compaction-ids.test.js` — 10 checks on the rewriting itself, runnable standalone with
   `node --test tests/compaction-ids.test.js` since the module imports only `node:crypto`.
+- `tests/continuation.test.js` — 9 checks on the continuation diagnosis, also standalone.
 
 The runner builds a throwaway module-resolution rig, because a profile-installed plugin resolves
 `@deepseek-ai/*` through the harness loader, which plain Node does not provide.

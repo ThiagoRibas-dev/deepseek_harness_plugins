@@ -18,6 +18,7 @@
 
 import { LlmError, offloadedImageText, projectOffloadedImages } from '@deepseek-ai/dsh-llm'
 import { remapToolIds } from './compaction-ids.js'
+import { analyzeContinuation } from './continuation.js'
 import { effortOfSlug } from './config.js'
 
 /** Meridian enforces at most four stop sequences of at most 1024 characters. */
@@ -132,6 +133,10 @@ export function serializeRequest({ options, connection, images, imageAccess, war
     ignoredKinds: connection.ignoredNoticeKinds,
     keepLatestRuntimeContext: connection.keepLatestRuntimeContext,
   })
+  // Read from the harness messages rather than the wire messages, because the
+  // assistant message that issued a tool call carries its provider there. Used
+  // only to explain a failure; see lib/continuation.js.
+  const continuation = analyzeContinuation(options.messages)
   const tools = resolveTools(options, connection)
   const effort = resolveEffort(options)
   const system = collectSystem(options)
@@ -176,7 +181,7 @@ export function serializeRequest({ options, connection, images, imageAccess, war
     warn?.(`Meridian Antigravity ignores reasoning effort ${JSON.stringify(String(options.reasoningEffort))}: this slug takes no effort override. Select the effort by slug instead.`)
   }
 
-  return { body, retained, compactionRemapped: remap?.remapped }
+  return { body, retained, compactionRemapped: remap?.remapped, continuation }
 }
 
 /** Output instruction. Meridian copies this into the prompt; it is not a cap. */
