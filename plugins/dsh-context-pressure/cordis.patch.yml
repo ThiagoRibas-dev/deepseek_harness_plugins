@@ -1,0 +1,24 @@
+# Bundle patch for @local/dsh-context-pressure.
+#
+# One host-plane row. This plugin provides no service, so it does not need to be
+# mounted inside a preset's isolated group the way the compaction guard does.
+# Session events bubble to ancestor contexts, so a listener registered here sees
+# every agent, including preset-scoped ones.
+#
+# Do NOT also insert this row into a preset group: that would register a second
+# listener for the same sessions and steer the nudge twice.
+- insert:
+    - id: context-pressure
+      name: '@local/dsh-context-pressure'
+      config:
+        # Sits just below compaction's own trigger, which defaults to 0.8.
+        warnRatio: 0.75
+        # Hysteresis: re-arm only once the window has dropped back, which in
+        # practice means a compaction landed. Without this the nudge repeats on
+        # every step.
+        rearmRatio: 0.6
+        # Generic by default. A preset that owns a scratchpad or memory tool can
+        # override this to name it. Placeholders: {percent}, {used}, {window}.
+        # message: >
+        #   Context is at {percent}% of this model's window. Write anything you
+        #   would need to resume to your campaign notes now.

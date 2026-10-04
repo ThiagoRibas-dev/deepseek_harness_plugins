@@ -1,0 +1,21 @@
+{
+  "name": "@local/dsh-context-pressure",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Steers one pre-compaction nudge into a running turn when the context window crosses a configured fraction, so the model can persist state before compaction replaces earlier history.",
+  "meta": {
+    "title": "Context Pressure Nudge",
+    "description": "Warns the model shortly before compaction, at 75% of the window by default."
+  },
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
