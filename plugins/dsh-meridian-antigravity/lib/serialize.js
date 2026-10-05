@@ -127,16 +127,31 @@ function restoreTrailingNotice(wire, dropped) {
 export function serializeRequest({ options, connection, images, imageAccess, warn, sessionKey }) {
   if (options.model.length === 0) throw new LlmError('Meridian Antigravity needs a model slug', 'INVALID_REQUEST')
 
+  // Read from the harness messages rather than the wire messages, because the
+  // assistant message that issued a tool call carries its provider there. It
+  // serves two purposes: gating the notice filter below, and explaining a
+  // failure. See lib/continuation.js.
+  const continuation = analyzeContinuation(options.messages)
+
   // Injected state notices are not model input: they describe harness state the
   // process cannot act on, and DSH appends them after the player's own message.
-  const { messages: history, dropped } = filterNoticeMessages(options.messages, {
-    ignoredKinds: connection.ignoredNoticeKinds,
-    keepLatestRuntimeContext: connection.keepLatestRuntimeContext,
-  })
-  // Read from the harness messages rather than the wire messages, because the
-  // assistant message that issued a tool call carries its provider there. Used
-  // only to explain a failure; see lib/continuation.js.
-  const continuation = analyzeContinuation(options.messages)
+  //
+  // Dropping a superseded runtime-context snapshot rewrites history, which is
+  // only safe on the request that starts a turn. Meridian requires each tool
+  // continuation's prefix to hash to the message list it delivered, and the
+  // snapshot that was newest when that list went out stops being newest as soon
+  // as the harness injects another one mid-turn. Filtering then removes it from
+  // the prefix, the hashes diverge, and Meridian answers 409 "changed its
+  // delivered history or tool batch" -- which is what happened on every long
+  // tool loop where the runtime context refreshed. A continuation therefore
+  // sends the history verbatim: the new snapshot is appended after the tool
+  // results, where Meridian accepts it, and nothing before them moves.
+  const { messages: history, dropped } = continuation === undefined
+    ? filterNoticeMessages(options.messages, {
+      ignoredKinds: connection.ignoredNoticeKinds,
+      keepLatestRuntimeContext: connection.keepLatestRuntimeContext,
+    })
+    : { messages: options.messages, dropped: [] }
   const tools = resolveTools(options, connection)
   const effort = resolveEffort(options)
   const system = collectSystem(options)
