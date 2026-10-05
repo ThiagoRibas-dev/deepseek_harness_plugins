@@ -27,12 +27,16 @@
  * @module @local/dsh-meridian-antigravity
  */
 
+import { randomUUID } from 'node:crypto'
+
 import { LlmAdapter, LlmError, assertUsableApiKey } from '@deepseek-ai/dsh-llm'
 import { Config, normalizeBaseURL, resolveOptions } from './lib/config.js'
 import { MeridianContract } from './lib/contract.js'
 import { TurnLedger } from './lib/idempotency.js'
 import { readImageRefs } from './lib/images.js'
 import { TurnGate } from './lib/limiter.js'
+import { createQuotaRouteHandler } from './lib/quota-route.js'
+import { createQuotaSource } from './lib/quota-source.js'
 import { runTurn } from './lib/transport.js'
 
 export { Config, normalizeBaseURL, resolveOptions } from './lib/config.js'
@@ -192,6 +196,80 @@ export function apply(ctx, config) {
     adapter.providerName = next.provider
     provider = next.provider
     registeredPolicy = next.retryPolicy
+  })
+
+  applyQuotaSurface(ctx, { optionsOf, resolveApiKey })
+}
+
+/**
+ * How often the timer nudges the quota reader.
+ *
+ * The reader's own floor decides whether a nudge becomes a read, so this only
+ * needs to be comfortably shorter than that floor. A tick equal to the floor
+ * would drift: a timer firing a millisecond early is refused, and the next
+ * chance is a whole period away.
+ */
+const QUOTA_TIMER_TICK_MS = 15_000
+
+/** Prefix route the browser half reads its snapshot from. */
+const QUOTA_ROUTE_PREFIX = '/dsh-meridian/quota'
+
+/**
+ * Wire the two refresh triggers and the route the browser half reads.
+ *
+ * The pool lives here rather than in the browser so that several sessions, tabs
+ * and page loads collapse into one read, and so the route can always answer from
+ * a cache instead of waiting on Meridian.
+ *
+ * @param ctx - plugin context.
+ * @param dependencies - `optionsOf` and `resolveApiKey` for the credential.
+ */
+function applyQuotaSurface(ctx, dependencies) {
+  const quota = createQuotaSource({ ...dependencies, logger: ctx.logger })
+  const enabled = () => dependencies.optionsOf().quotaEnabled !== false
+
+  // Trigger one: every assistant response. Trigger two: a timer. Both go through
+  // the same floor, so whichever fires first satisfies the other and the
+  // effective cadence is at most one read a minute.
+  ctx.on('session/event', (session, event) => {
+    if (!enabled() || event?.type !== 'assistant/message') return
+    quota.requestRefresh('assistant-message')
+  })
+  ctx.effect(() => {
+    const timer = setInterval(() => {
+      if (enabled()) quota.requestRefresh('interval')
+    }, QUOTA_TIMER_TICK_MS)
+    timer.unref?.()
+    return () => {
+      clearInterval(timer)
+      quota.dispose()
+    }
+  }, 'meridian-quota-refresh')
+
+  // A route registered by a plugin inherits none of the harness's own
+  // authentication, so it authenticates itself and the browser half is handed
+  // the token by document injection. That is the same bridge the TTS bundle uses.
+  ctx.inject(['webServer'], (webCtx) => {
+    const webServer = webCtx.webServer
+    if (typeof webServer?.register !== 'function') return
+    const token = randomUUID()
+    webCtx.effect(() => webServer.register({
+      kind: 'prefix',
+      path: QUOTA_ROUTE_PREFIX,
+      handler: createQuotaRouteHandler({ quota, token }),
+    }), 'meridian-quota-route')
+
+    if (typeof webServer.tapIndex !== 'function') {
+      ctx.logger?.warn?.(
+        'meridian-antigravity: webServer has no tapIndex, so the browser half will not receive the quota token',
+      )
+      return
+    }
+    webCtx.effect(() => webServer.tapIndex((html) => {
+      const identity = { prefix: QUOTA_ROUTE_PREFIX, token }
+      const tag = `<script>window.__DSH_MERIDIAN__=${JSON.stringify(identity).replace(/</g, '\\u003c')}</script>`
+      return html.includes('</head>') ? html.replace('</head>', `${tag}</head>`) : tag + html
+    }), 'meridian-quota-identity')
   })
 }
 

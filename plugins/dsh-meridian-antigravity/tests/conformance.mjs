@@ -629,6 +629,40 @@ await test('the default policy never retries a transcript or identity failure', 
   }
 })
 
+await test('an in-stream quota error is QUOTA, not a retryable transport fault', async () => {
+  // A quota failure arrives as an error event inside an otherwise successful
+  // stream. Classified TRANSPORT it was retried twice before failing with text
+  // that read like a network fault; no retry can succeed until the window resets.
+  state.script = (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    res.write(sse('message_start', { type: 'message_start', message: { id: 'msg_quota', model: 'claude-sonnet-5-5-medium', content: [], usage: {} } }))
+    res.write(sse('error', {
+      type: 'error',
+      error: {
+        type: 'rate_limit_error',
+        message: 'Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h43m43s.',
+      },
+    }))
+    res.end()
+  }
+  const failure = await expectFailure(collect(runTurn(deps(connectionOf()), baseOptions())), 'QUOTA')
+  assert.equal(failure.failure.providerRetryAfterMs, 9_823_000, 'the reset window must reach the harness')
+  assert.ok(
+    !connectionOf().retryPolicy.retryableCodes.includes('QUOTA'),
+    'a quota failure must not be retried',
+  )
+})
+
+await test('an in-stream fault that is not about quota stays a retryable transport error', async () => {
+  state.script = (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    res.write(sse('message_start', { type: 'message_start', message: { id: 'msg_other', model: 'm', content: [], usage: {} } }))
+    res.write(sse('error', { type: 'error', error: { type: 'api_error', message: 'Internal error, please retry.' } }))
+    res.end()
+  }
+  await expectFailure(collect(runTurn(deps(connectionOf()), baseOptions())), 'TRANSPORT')
+})
+
 await test('a non-JSON gateway body still classifies by HTTP status', async () => {
   state.script = (req, res) => { res.writeHead(503, { 'content-type': 'text/plain' }); res.end('upstream unavailable') }
   await expectFailure(collect(runTurn(deps(connectionOf()), baseOptions())), 'SERVER')

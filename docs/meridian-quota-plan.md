@@ -59,8 +59,8 @@ cannot succeed until a window resets.
 
 | Path | Classified as | Retryable? |
 | --- | --- | --- |
-| HTTP 429 with a quota message | `RATE_LIMIT` | yes |
-| Quota error inside an SSE stream | `TRANSPORT` (via `streamInterrupted`) | yes |
+| HTTP 429 with a quota message | `QUOTA` | no |
+| Quota error inside an SSE stream | `TRANSPORT` (via `streamInterrupted`) | **yes** |
 
 The retryable set is declared in `lib/config.js`:
 
@@ -68,11 +68,17 @@ The retryable set is declared in `lib/config.js`:
 retryableCodes: ['RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT', 'EMPTY_RESPONSE', 'MERIDIAN_PENDING_REPLAYABLE']
 ```
 
-Your session log shows the second path: the quota text arrived mid-stream and was reported as
-`Meridian Antigravity stream ended before message_stop (Individual quota reached… Resets in 2h43m43s.)`,
-which is `streamInterrupted` returning `TRANSPORT`, which the policy then retried twice.
+**Correction, found while implementing.** This section originally claimed that a quota 429 maps to
+`RATE_LIMIT` and is retried. It does not. `errors.js:156` already classifies a 429 whose message matches
+`QUOTA_HINTS` as `QUOTA` — the harness's own `QUOTA_EXCEEDED_CODE` (`llm/src/error.ts:28`), which is
+absent from the retryable set — so that path was already correct and needed no new code.
 
-A new code that is absent from that list stops the retries without touching anything else.
+The defect is only the second row. Your session log shows the quota text arriving mid-stream and being
+reported as `Meridian Antigravity stream ended before message_stop (Individual quota reached… Resets in
+2h43m43s.)`, which is `streamInterrupted` returning `TRANSPORT`, which the policy then retried twice. The
+fix routes that case through the same `QUOTA` classification rather than inventing a code.
+
+Neither path read the reset window out of the message, so `providerRetryAfterMs` now comes from it.
 
 ## 4. The composer, and what a plugin may do to it
 

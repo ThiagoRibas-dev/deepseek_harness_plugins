@@ -110,22 +110,46 @@ test('declares the client services the card reads', () => {
   }
 })
 
-test('registers into the keyed provider-card slot under its settings namespace', () => {
-  let caught
-  const ctx = { slots: { inject: (key, callback) => { caught = { key }; callback() }, register: (options, component) => { caught.options = options; caught.component = component } } }
+/**
+ * Apply the module to a stub context and return one registration by slot name.
+ * @param name - the slot to look for.
+ * @returns the registration options and component.
+ */
+function registrationFor(name) {
+  const registrations = []
+  const ctx = {
+    slots: {
+      inject: (key, callback) => callback(),
+      register: (options, component) => { registrations.push({ options, component }) },
+    },
+  }
   module.apply(ctx)
-  assert.equal(caught.key, 'settings.models.provider-card')
-  assert.equal(caught.options.name, 'settings.models.provider-card')
-  assert.equal(caught.options.key, module.__components.NS)
+  const found = registrations.find(entry => entry.options.name === name)
+  assert.ok(found !== undefined, `expected a registration for ${name}`)
+  return found
+}
+
+test('registers into the keyed provider-card slot under its settings namespace', () => {
+  const card = registrationFor('settings.models.provider-card')
+  assert.equal(card.options.key, module.__components.NS)
   assert.equal(module.__components.NS, 'llm-meridian-antigravity')
-  assert.equal(typeof caught.component, 'function')
+  assert.equal(typeof card.component, 'function')
 })
 
-test('registers no other slot', () => {
+test('registers the quota strip into the composer dock', () => {
+  // `conversation.composer.dock` is a list slot with no replacement risk, which
+  // is what makes it usable from a plugin: the composer's own blocked/disabled
+  // props belong to its owner, not to a registrant.
+  const strip = registrationFor('conversation.composer.dock')
+  assert.equal(strip.options.id, 'meridian-quota')
+  assert.equal(typeof strip.component, 'function')
+})
+
+test('registers into no other slot', () => {
   const keys = []
   const ctx = { slots: { inject: (key, callback) => { keys.push(key); callback() }, register: () => {} } }
   module.apply(ctx)
-  assert.deepEqual(keys, ['settings.models.provider-card'])
+  assert.deepEqual(keys, ['settings.models.provider-card', 'conversation.composer.dock'])
 })
 
 // ------------------------------------------------------------------ first render
@@ -137,7 +161,12 @@ function renderCard({ active = true, keyConfigured = true, status = 'ready', wri
   }
   let component
   const ctx = {
-    slots: { inject: (key, callback) => callback(), register: (options, next) => { component = next } },
+    slots: {
+      inject: (key, callback) => callback(),
+      // Only the provider card: the module also registers a composer strip, and
+      // taking the last registration would render that instead.
+      register: (options, next) => { if (options.name === 'settings.models.provider-card') component = next },
+    },
     configForms: { get: ns => { assert.equal(ns, 'llm-meridian-antigravity'); return form } },
     remote: { credentials: { set: async () => ({ ok: true }), unset: async () => ({ ok: true }) }, llm: { discoverModels: async () => ({ ok: true, value: [] }) } },
   }

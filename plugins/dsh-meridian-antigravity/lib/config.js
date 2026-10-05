@@ -55,6 +55,15 @@ export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
 /** How long a `/health` reading and a `/v1/models` catalogue stay usable. */
 export const DEFAULT_HEALTH_TTL_MS = 60_000
 export const DEFAULT_CATALOGUE_TTL_MS = 300_000
+/**
+ * Floor between provider-status reads.
+ *
+ * Meridian caches a quota reading for 60 seconds on success and 10 after a
+ * failure, and starts at most one background refresh per 10 seconds
+ * (`antigravityRuntime.ts:501,508`), so a minute is its own cadence rather than
+ * a rate above it. Polling faster would return the same numbers.
+ */
+export const DEFAULT_QUOTA_REFRESH_MS = 60_000
 
 /**
  * Injected user-role notices that carry no instruction for the model: they
@@ -123,6 +132,10 @@ export const Config = z.object({
   allowUnknownModels: z.boolean().default(false).volatile(),
   healthTtlMs: z.number().step(1).min(0).default(DEFAULT_HEALTH_TTL_MS).volatile(),
   catalogueTtlMs: z.number().step(1).min(0).default(DEFAULT_CATALOGUE_TTL_MS).volatile(),
+  /** Expose the provider quota and activity snapshot to the browser half. */
+  quotaEnabled: z.boolean().default(true).volatile(),
+  /** Floor between quota reads; `0` reads on every trigger. */
+  quotaRefreshMs: z.number().step(1).min(0).default(DEFAULT_QUOTA_REFRESH_MS).volatile(),
   defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW).volatile(),
   defaultMaxTokens: z.number().step(1).min(1).default(DEFAULT_MAX_TOKENS).volatile(),
   maxRequestBytes: z.number().step(1).min(1).default(DEFAULT_MAX_REQUEST_BYTES).volatile(),
@@ -221,6 +234,8 @@ export function resolveOptions(config, environment = process.env) {
     allowUnknownModels: plain.allowUnknownModels ?? false,
     healthTtlMs: plain.healthTtlMs ?? DEFAULT_HEALTH_TTL_MS,
     catalogueTtlMs: plain.catalogueTtlMs ?? DEFAULT_CATALOGUE_TTL_MS,
+    quotaEnabled: plain.quotaEnabled ?? true,
+    quotaRefreshMs: plain.quotaRefreshMs ?? DEFAULT_QUOTA_REFRESH_MS,
     defaultContextWindow: defaults.contextWindow,
     defaultMaxTokens: defaults.maxTokens,
     maxRequestBytes: plain.maxRequestBytes ?? DEFAULT_MAX_REQUEST_BYTES,

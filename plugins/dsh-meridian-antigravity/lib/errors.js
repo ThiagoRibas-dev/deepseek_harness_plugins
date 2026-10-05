@@ -11,6 +11,7 @@
  */
 
 import { LlmError, ProviderRequestId } from '@deepseek-ai/dsh-llm'
+import { parseResetWindow, quotaFailure } from './quota.js'
 
 /** HTTP status is not enough: these codes come from the response body. */
 const QUOTA_HINTS = /quota|billing|insufficient|subscription|overage/iu
@@ -153,7 +154,18 @@ export function meridianError(raw, status, headers) {
     )
   }
   if (status === 429) {
-    return new LlmError(message, QUOTA_HINTS.test(detail) ? 'QUOTA' : 'RATE_LIMIT', facts)
+    if (!QUOTA_HINTS.test(detail)) return new LlmError(message, 'RATE_LIMIT', facts)
+    // The CLI states the window in the message ("Resets in 2h43m43s") and the
+    // response seldom carries a retry-after, so read it from the text when the
+    // header did not supply one. Carrying it lets the harness say when the model
+    // becomes usable again instead of only that it is not.
+    const resetAfter = parseResetWindow(detail)
+    return new LlmError(message, 'QUOTA', {
+      ...facts,
+      ...resetAfter === undefined || facts.providerRetryAfterMs !== undefined
+        ? {}
+        : { providerRetryAfterMs: resetAfter },
+    })
   }
   if (status === 504) return new LlmError(message, 'TIMEOUT', facts)
   if (status >= 500) return new LlmError(message, 'SERVER', facts)
@@ -200,8 +212,24 @@ export function meridianErrorFromText(status, headers, body) {
  * A malformed or prematurely closed server-sent event stream. Marked
  * `TRANSPORT` so the bounded retry policy may re-ask with the same identity,
  * which is safe because no tool block is ever delivered before `message_stop`.
+ *
+ * A quota failure arrives the same way, as an error event inside an otherwise
+ * successful stream, and is the exception: it is classified `QUOTA` so it is not
+ * retried, and the reset window stated in the message becomes the retry-after the
+ * harness reports.
  */
 export function streamInterrupted(detail, cause) {
+  const quota = quotaFailure(detail)
+  if (quota !== undefined) {
+    return new LlmError(
+      `Meridian Antigravity refused the turn: the subscription quota is exhausted (${detail})`,
+      quota.code,
+      {
+        ...quota.retryAfterMs === undefined ? {} : { providerRetryAfterMs: quota.retryAfterMs },
+        ...cause === undefined ? {} : { cause },
+      },
+    )
+  }
   return new LlmError(
     `Meridian Antigravity stream ended before message_stop (${detail})`,
     'TRANSPORT',

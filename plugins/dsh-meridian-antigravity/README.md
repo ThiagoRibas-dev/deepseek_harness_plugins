@@ -176,22 +176,58 @@ error carries the explanation, naming the issuing provider and the offending ids
 The remedy is to let the batch finish on the provider that issued it, or to switch models when no tool
 call is awaiting a result.
 
+### Quota and activity
+
+Meridian publishes per-provider quota windows through `GET /providers/status`, a documented stable
+interface, and reports an exhausted quota as either a 429 or an error event inside a stream. A quota
+failure now classifies as `QUOTA` on **both** paths — the in-stream case used to arrive as `TRANSPORT`
+and was retried twice against a condition that cannot clear until a window resets — and the reset
+window stated in the message (`Resets in 2h43m43s`) becomes `providerRetryAfterMs`.
+
+`lib/quota-source.js` reads that endpoint once a minute at most, driven by two triggers pooled behind
+one floor: every assistant response, and a 15-second timer that the floor turns into a read about once
+a minute. A minute is Meridian's own cadence rather than a rate above it — it refreshes a quota reading
+every 60 seconds on success and 10 after a failure, and starts at most one background status refresh
+per 10 seconds — so most reads return its cache.
+
+`lib/quota-route.js` serves the cached snapshot to the browser half over a prefix route, and
+`index.js` injects the route token into the document as `window.__DSH_MERIDIAN__`. A route registered
+by a plugin inherits none of the harness's own authentication, so the token is what keeps the account's
+usage off the LAN; it is per process, so a rotated token needs a page refresh.
+
+The browser half renders it in `conversation.composer.dock`, an ambient strip below the composer. It
+shows utilisation and a reset countdown per window, plus the request and token counts from Meridian's
+activity block. When Meridian cannot read the quota — which is the current state for this account, its
+schema rejecting the `agy` usage report over a missing `reset_time` — the strip says so and shows
+Meridian's own error, because an indicator that silently shows nothing is worse than none.
+
+A plugin **cannot** stop a send. `conversation.composer.bar` declares `blocked` and `disabled`, but they
+are owner props, `ui-conversation` never sets them, and no service exposes an equivalent, so a registrant
+cannot reach them. The strip is a report, not a gate.
+
 ## Tests
 
-`./tests/run.sh` runs five offline suites — no live service and no subscription quota:
+`./tests/run.sh` runs three suites through a module-resolution rig — no live service and no subscription
+quota:
 
-- `tests/conformance.mjs` — 53 checks against a scriptable fake Meridian over loopback (health gate,
+- `tests/conformance.mjs` — 55 checks against a scriptable fake Meridian over loopback (health gate,
   catalogue, request shape, tool holding, recovery, identity, error policy, injected-notice filtering,
-  base-URL handling).
-- `tests/client.mjs` — 9 checks on the client half: the module-loader contract, the slot key and
-  registration options, and the card's first render under a minimal React shim (every field, the
-  inactive and keyless states, the overridden marker, and the unwritable namespace).
+  base-URL handling, and the in-stream quota classification).
+- `tests/client.mjs` — the module-loader contract, both slot registrations, and the card's first render
+  under a minimal React shim (every field, the inactive and keyless states, the overridden marker, and
+  the unwritable namespace).
 - `tests/serialize-compaction.mjs` — that a compaction call reaches the wire with re-derived, paired
   ids and no tools, that a conversation call is byte-identical to before, and that serialization is
   stable across attempts.
-- `tests/compaction-ids.test.js` — 10 checks on the rewriting itself, runnable standalone with
-  `node --test tests/compaction-ids.test.js` since the module imports only `node:crypto`.
-- `tests/continuation.test.js` — 9 checks on the continuation diagnosis, also standalone.
+
+The remaining suites import nothing but Node built-ins, so they run standalone with `node --test` and no
+rig:
+
+- `tests/quota.test.js` (10) — quota detection, reset-window parsing, status normalization.
+- `tests/quota-source.test.js` (9) — the pooled reader: coalescing, the refresh floor, failure states.
+- `tests/quota-route.test.js` (6) — route auth, method handling, and the not-settled answer.
+- `tests/compaction-ids.test.js` (10) — tool-id rewriting for compaction calls.
+- `tests/continuation.test.js` (9) — the continuation diagnosis.
 
 The runner builds a throwaway module-resolution rig, because a profile-installed plugin resolves
 `@deepseek-ai/*` through the harness loader, which plain Node does not provide.
@@ -199,11 +235,11 @@ The runner builds a throwaway module-resolution rig, because a profile-installed
 ```console
 $ ./tests/run.sh
 ...
-9 passed, 0 failed
+10 passed, 0 failed
 
 serialize-compaction: ok
 
-53 passed, 0 failed
+55 passed, 0 failed
 ```
 
 ## Deliberate non-goals

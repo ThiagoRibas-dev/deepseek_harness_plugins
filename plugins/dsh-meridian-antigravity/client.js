@@ -329,6 +329,99 @@ window.__ModuleLoader__.load({
           : null)
     }
 
+    /** How often the strip re-reads the host's cached snapshot. */
+    const QUOTA_POLL_MS = 30_000
+
+    /** Compact "1h 5m" / "43s" form for a reset window. */
+    function formatWait(ms) {
+      if (!Number.isFinite(ms) || ms <= 0) return 'now'
+      const seconds = Math.round(ms / 1000)
+      if (seconds < 60) return `${seconds}s`
+      const minutes = Math.floor(seconds / 60)
+      if (minutes < 60) return `${minutes}m`
+      return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+    }
+
+    /**
+     * The composer strip.
+     *
+     * Three states, and the middle one is the one that matters: Meridian can
+     * report quota it cannot read, and that has to look like an explanation
+     * rather than like empty quota. The host route authenticates itself, so the
+     * token arrives through `window.__DSH_MERIDIAN__`; without one there is no
+     * route to read and the strip stays out of the way.
+     */
+    function QuotaStrip() {
+      const identity = typeof window === 'undefined' ? undefined : window.__DSH_MERIDIAN__
+      const [snapshot, setSnapshot] = useState(undefined)
+      const [failure, setFailure] = useState(undefined)
+
+      useEffect(() => {
+        if (identity === undefined) return undefined
+        let stopped = false
+        const read = async () => {
+          try {
+            const response = await fetch(identity.prefix, {
+              headers: { 'x-dsh-meridian-token': identity.token },
+            })
+            const body = await response.json()
+            if (stopped) return
+            if (body?.error !== undefined && body?.status === undefined) {
+              setFailure(`Quota route refused: ${String(body.error)}`)
+              return
+            }
+            setSnapshot(body)
+            setFailure(undefined)
+          } catch (error) {
+            if (!stopped) setFailure(error instanceof Error ? error.message : String(error))
+          }
+        }
+        void read()
+        const timer = setInterval(() => { void read() }, QUOTA_POLL_MS)
+        return () => {
+          stopped = true
+          clearInterval(timer)
+        }
+      }, [identity])
+
+      if (identity === undefined || (snapshot === undefined && failure === undefined)) return null
+
+      if (failure !== undefined) {
+        return h('div', { style: { ...styles.hint, ...styles.bad } }, `Quota unavailable: ${failure}`)
+      }
+
+      const windows = Array.isArray(snapshot.windows) ? snapshot.windows : []
+      const activity = snapshot.activity
+      const chips = windows.map(window => {
+        const percent = Math.round(window.utilization * 100)
+        const reset = typeof window.resetsAt === 'number'
+          ? `, resets in ${formatWait(window.resetsAt - Date.now())}`
+          : ''
+        const style = { ...styles.chip, ...(percent >= 100 ? styles.bad : percent >= 90 ? styles.warn : {}) }
+        return h('span', { key: `${window.account ?? ''}:${window.type}`, style },
+          `${window.type} ${percent}%${reset}`)
+      })
+
+      if (chips.length === 0) {
+        // "Cannot read it" is not "nothing used". Say which it is.
+        const detail = typeof snapshot.error === 'string' && snapshot.error.length > 0
+          ? snapshot.error.split('\n')[0].slice(0, 200)
+          : `Meridian status is "${snapshot.status}"`
+        return h('div', { style: { ...styles.hint, ...styles.warn } },
+          `Quota unavailable — ${detail}`)
+      }
+
+      const tokens = activity === undefined
+        ? undefined
+        : `${activity.requests ?? 0} req, ${activity.errors ?? 0} err, `
+          + `${activity.inputTokens ?? 0} in / ${activity.outputTokens ?? 0} out`
+
+      return h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' } },
+        h('span', { style: styles.label }, 'Antigravity quota'),
+        ...chips,
+        tokens === undefined ? null : h('span', { style: styles.mono }, tokens))
+    }
+
     return {
       // `remote` and each declared sub-proxy are both required: reading
       // `ctx.remote.credentials` reads `ctx.remote` first, and that read is
@@ -341,10 +434,18 @@ window.__ModuleLoader__.load({
           key: NS,
           order: 10,
         }, props => h(MeridianCard, { ...props, ctx })))
+        // Ambient entry below the composer card. A list slot with no replacement
+        // risk, which is what makes it usable from a plugin: the composer's own
+        // `blocked`/`disabled` props belong to its owner, not to a registrant.
+        ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
+          name: 'conversation.composer.dock',
+          id: 'meridian-quota',
+          order: 20,
+        }, QuotaStrip))
       },
       // Exported for the offline suite, which exercises the factory contract and
       // the card's first render without a browser.
-      __components: { MeridianCard, styles, NS, TEXT_FIELDS, NUMBER_FIELDS, BOOLEAN_FIELDS },
+      __components: { MeridianCard, QuotaStrip, styles, NS, TEXT_FIELDS, NUMBER_FIELDS, BOOLEAN_FIELDS },
     }
   },
 })
