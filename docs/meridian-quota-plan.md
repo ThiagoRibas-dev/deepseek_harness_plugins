@@ -152,6 +152,22 @@ The only item that delivers value today, and the smallest.
   activity, fetchedAt }`.
 - Cache with a TTL and refresh in the background. A turn must never wait on quota: reading it is a
   convenience, not a precondition.
+- **Pool the refresh behind one trigger.** Two sources call it — every assistant response, and a
+  one-minute timer — and a single "last attempt" timestamp gates it, so whichever fires first satisfies
+  the other. The effective cadence is at most one reading a minute.
+- **That cadence is safe, and Meridian already bounds the cost.** There is no client-facing rate limit
+  on the endpoint, and three layers sit behind it: `/providers/status` starts at most one background
+  refresh per 10 seconds and only when none is in flight (`antigravityRuntime.ts:501`); the
+  `agy -p /usage` call behind it runs at most once per 60 seconds on success, or 10 seconds after a
+  failure (`:508`); and concurrent callers share one in-flight promise (`:509`). A one-minute poll is
+  therefore at Meridian's own refresh rate rather than above it, and most reads return its cache instead
+  of starting work. Polling faster would return identical numbers.
+- **Serve our own cached copy from the route**, so browser refreshes, extra tabs and page loads do not
+  each reach Meridian.
+- The one thing to avoid is retrying through a CLI failure cooldown. `verifyAccount` can answer 503 with
+  a retry-after while the account check cools down (`:526`), and Meridian surfaces that as an error on
+  the cached reading rather than failing the request, so the strip should show it and wait rather than
+  poll harder.
 - Tests: the normalizer, with the `unavailable` payload from §2 as the primary fixture, since that is the
   real case today, alongside a healthy payload.
 
@@ -192,13 +208,19 @@ like a gate and is not one.
   endpoint. A slow interval and a cached read are not optional.
 - **The injected token needs a page refresh to rotate**, matching the TTS plugin's accepted trade.
 
-## 8. Open questions
+## 8. Decisions
 
-1. Should the strip show anything for Claude? It is `enabled: false` in your profile, so it currently
-   has no accounts at all. I would skip it until it is enabled.
-2. What refresh interval is tolerable? The activity strip in Meridian's own dashboard is hourly-bucketed,
-   and quota readings refresh in the background, so a minute is probably already more often than needed.
-3. Is the host route wanted at all, or would you rather the strip appear only once Meridian's parser is
-   fixed and there is a real percentage to show? Building B and C now means the plumbing is ready and
-   the "unavailable" state is visible, but it is work spent on an endpoint that currently returns
-   nothing for you.
+1. **Claude: not now.** It is `enabled: false` in this profile and reports no accounts, so the strip
+   covers Antigravity only. Nothing in the design blocks adding it later.
+2. **Refresh: pooled, on an assistant response and a one-minute timer**, as set out under B. Meridian
+   imposes no client-facing limit and caches at the same cadence, so this adds no load it was not
+   already doing for its own dashboard.
+3. **Build the host route now, without waiting on Meridian's parser.** The availability state is
+   designed as a first-class outcome rather than a temporary condition, so the strip stays useful
+   whether or not Meridian ever reads quota for this account again. The connector reports what Meridian
+   says, including the reason it cannot say more.
+
+Noted while reading the quota path, and useful for the normalizer in B: Meridian derives
+`utilization` as `1 - bucket.remaining_fraction`, sets `type` from the bucket id and groups by
+`group.name`, and turns `reset_time` into `resetsAt` with `Date.parse` (`antigravityRuntime.ts:514`).
+The failure in §2 happens one line earlier, in schema validation of `reset_time` itself (`:513`).
