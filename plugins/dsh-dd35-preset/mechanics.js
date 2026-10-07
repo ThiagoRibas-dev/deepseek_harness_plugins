@@ -1,16 +1,19 @@
 /**
- * D&D 3.5e DM — dice and combat mechanics.
+ * D&D 3.5e DM — combat mechanics.
  *
  * Full combat tracker over the session/entity state:
- *   - d20 resolution (checks, saves, skills, attacks with crit confirmation)
+ *   - d20 resolution (`roll_check` for a check or opposed contest; `roll_attack`
+ *     for attacks with crit confirmation and damage)
  *   - initiative (roll, sort, advance, re-order for delays/readies/refocus)
  *   - damage/healing with temp HP and automatic disabled/dying/dead status
  *   - conditions with round-based expiry, ticked at the end of each round
  *
- * All per-entity facts (hp, temp_hp, ac, conditions, position) live on the
- * entity sheet; session facts (round, order, index) live in state.json.
+ * Every roll comes from `dice.js`; this module owns only the 3.5e semantics on
+ * top of it. All per-entity facts (hp, temp_hp, ac, conditions, position) live
+ * on the entity sheet; session facts (round, order, index) live in state.json.
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { againstDc, rollD20, rollExpression } from './dice.js'
 import {
   bounded, configure, defaultEntity, loadAnyEntity, requireCampaign, requireState,
   saveEntity, saveState,
@@ -23,28 +26,6 @@ export const name = 'dd35-mechanics'
 export const inject = ['tools']
 
 const text = (value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }]
-
-// ---- dice ----------------------------------------------------------------
-
-function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min }
-function rollD20() { return randInt(1, 20) }
-
-/** Parse and roll a damage expression: "1d8+5", "2d6", "1d10-1", or a flat number. */
-function rollExpression(expr) {
-  const cleaned = String(expr).replace(/\s+/g, '')
-  const match = cleaned.match(/^(\d*)d(\d+)([+-]\d+)?$/i)
-  if (match) {
-    const count = match[1] === '' ? 1 : Number.parseInt(match[1], 10)
-    const sides = Number.parseInt(match[2], 10)
-    const bonus = match[3] ? Number.parseInt(match[3], 10) : 0
-    const rolls = Array.from({ length: count }, () => randInt(1, sides))
-    const dice = rolls.reduce((sum, n) => sum + n, 0)
-    return { expr: cleaned, rolls, dice, bonus, total: dice + bonus }
-  }
-  const flat = Number.parseInt(cleaned, 10)
-  if (!Number.isNaN(flat)) return { expr: cleaned, rolls: [], dice: 0, bonus: flat, total: flat }
-  throw new Error(`Unsupported damage expression: ${expr}`)
-}
 
 /** 3.5e hit-point condition at a given hp total. */
 function hpStatus(hp) {
@@ -116,82 +97,44 @@ export function apply(ctx, config = {}) {
   // ---- d20 resolution ----------------------------------------------------
 
   ctx.tools.register(define({
-    name: 'roll_d20',
+    name: 'roll_check',
     description:
-      'Roll a d20 with a modifier, optionally against a DC, and return roll/total/success/margin. Use for any '
-      + 'ability check, caster-level check, percentile-free opposed check, or ad-hoc ruling. State the check and DC to the player.',
+      'Roll a d20 check: a saving throw, skill check, ability check, or opposed contest. Against a DC it rolls '
+      + 'd20 + modifier and returns success and margin. Pass `opponent` instead of `dc` for an opposed check: both '
+      + 'sides roll and a tie is re-rolled once, per 3.5e. State the check and DC to the player.',
     parameters: {
       modifier: { type: 'integer', description: 'Total modifier added to the d20.' },
-      dc: { type: 'integer', description: 'Difficulty class to beat (total >= DC succeeds).' },
-      kind: { type: 'string', description: 'Label, e.g. "Reflex save" or "Spot".' },
+      dc: { type: 'integer', description: 'Difficulty class to beat (total >= DC succeeds). Omit for an opposed check.' },
+      kind: { type: 'string', description: 'What is being rolled, e.g. "Reflex save", "Spot", "Move Silently".' },
+      opponent: { type: 'string', description: 'Opponent label. When present the roll is opposed and `dc` is ignored.' },
+      opponent_modifier: { type: 'integer', description: "Opponent's total modifier for an opposed check." },
       note: { type: 'string', description: 'Free-text context echoed back.' },
     },
     output: { schema: { type: 'json' }, render: (_a, v) => text(v) },
-    execute({ modifier = 0, dc, kind, note }) {
+    execute({ modifier = 0, dc, kind, opponent, opponent_modifier = 0, note }) {
+      const label = kind ?? 'check'
+      if (opponent !== undefined) {
+        const contest = () => ({ a: rollD20() + modifier, b: rollD20() + opponent_modifier })
+        let values = contest()
+        while (values.a === values.b) values = contest()
+        return {
+          kind: label,
+          opposed: true,
+          a: { name: label, modifier, total: values.a },
+          b: { name: opponent, modifier: opponent_modifier, total: values.b },
+          winner: values.a > values.b ? label : opponent,
+        }
+      }
       const roll = rollD20()
       const total = roll + modifier
-      const result = { kind: kind ?? 'check', roll, modifier, total, note }
-      if (dc !== undefined) {
-        result.dc = dc
-        result.success = total >= dc
-        result.margin = total - dc
-        result.critical = roll === 20 ? 'success' : roll === 1 ? 'failure' : undefined
-      }
+      const result = { kind: label, roll, modifier, total }
+      if (note !== undefined) result.note = note
+      // Informational, as it was on the retired roll_d20: a natural 1 or 20 does
+      // not by itself change `success` here.
+      if (roll === 20) result.critical = 'success'
+      else if (roll === 1) result.critical = 'failure'
+      if (dc !== undefined) Object.assign(result, againstDc(total, dc))
       return result
-    },
-  }))
-
-  ctx.tools.register(define({
-    name: 'roll_save',
-    description: 'Roll a saving throw (d20 + save modifier) against a DC. Returns success/failure and margin.',
-    parameters: {
-      modifier: { type: 'integer', description: 'Total save modifier.' },
-      dc: { type: 'integer', required: true, description: 'Save DC.' },
-      save: { type: 'string', description: 'Fortitude | Reflex | Will.' },
-    },
-    output: { schema: { type: 'json' }, render: (_a, v) => text(v) },
-    execute({ modifier = 0, dc, save }) {
-      const roll = rollD20()
-      const total = roll + modifier
-      return { kind: 'save', save: save ?? '', roll, modifier, total, dc, success: total >= dc, margin: total - dc }
-    },
-  }))
-
-  ctx.tools.register(define({
-    name: 'roll_skill',
-    description: 'Roll a skill check (d20 + skill modifier) against a DC. Returns success/failure and margin.',
-    parameters: {
-      modifier: { type: 'integer', description: 'Total skill modifier.' },
-      dc: { type: 'integer', required: true, description: 'Check DC.' },
-      skill: { type: 'string', description: 'Skill name, e.g. Spot or Tumble.' },
-    },
-    output: { schema: { type: 'json' }, render: (_a, v) => text(v) },
-    execute({ modifier = 0, dc, skill }) {
-      const roll = rollD20()
-      const total = roll + modifier
-      return { kind: 'skill', skill: skill ?? '', roll, modifier, total, dc, success: total >= dc, margin: total - dc }
-    },
-  }))
-
-  ctx.tools.register(define({
-    name: 'roll_opposed',
-    description: 'Roll two opposed d20 checks and report the winner (re-rolls a tie once, per 3.5e opposed checks).',
-    parameters: {
-      a_name: { type: 'string', description: 'First contestant label.' },
-      a_modifier: { type: 'integer', description: 'First contestant modifier.' },
-      b_name: { type: 'string', description: 'Second contestant label.' },
-      b_modifier: { type: 'integer', description: 'Second contestant modifier.' },
-    },
-    output: { schema: { type: 'json' }, render: (_a, v) => text(v) },
-    execute({ a_name = 'A', a_modifier = 0, b_name = 'B', b_modifier = 0 }) {
-      const roll = () => ({ a: rollD20() + a_modifier, b: rollD20() + b_modifier })
-      let values = roll()
-      while (values.a === values.b) values = roll()
-      return {
-        a: { name: a_name, total: values.a },
-        b: { name: b_name, total: values.b },
-        winner: values.a > values.b ? a_name : b_name,
-      }
     },
   }))
 

@@ -6,9 +6,11 @@
  *   campaign/<id>/events/transcripts/NNNN_turn.md   one file per completed turn
  *   campaign/<id>/events/memory_index.json          the scene index (incremental)
  *
- * The transcript is the durable record of what was actually said; the index is
- * a derived convenience that can always be rebuilt from the transcripts, so a
- * lost or corrupt index is never data loss.
+ * The transcript is the durable record of what was actually said **and** of the
+ * scene state the turn closed in; the index is a derived convenience that can
+ * always be rebuilt from the transcripts, so a lost or corrupt index is never
+ * data loss. There is deliberately no second turn file: a hand-maintained
+ * `campaign_log.md` used to duplicate this content, and the two drifted.
  *
  * Nothing here writes to a campaign except `writeTranscript` and the index
  * writers — the read paths (`loadTranscripts`, `readMemoryIndex`) are safe to
@@ -27,20 +29,37 @@ export const UNTITLED = 'Untitled Scene'
 /**
  * Write one completed turn's transcript. Returns the file name.
  *
+ * This is the campaign's only turn record. It holds both what was said and the
+ * scene state at the end of the turn, so no other file is needed and the index can
+ * be rebuilt from it.
+ *
  * The header carries the turn's clock reading as well as its title, so the
- * campaign's date span is derivable from the transcripts alone — no second
- * source of truth for the index to drift away from.
+ * campaign's date span is also derivable from the transcripts alone.
+ *
+ * State values are collapsed to a single line because `parseTranscript` reads the
+ * header line by line; a micro-state containing a newline would otherwise swallow
+ * every field after it.
  */
-export function writeTranscript(id, { number, title, date, location, playerInput, dmOutput }) {
+export function writeTranscript(id, {
+  number, title, date, location, entities, microState, pendingAction, playerInput, dmOutput,
+}) {
   const dir = transcriptsDir(id)
   ensureDir(dir)
   const file = `${String(number).padStart(4, '0')}_turn.md`
   const head = [`# Turn ${String(number).padStart(4, '0')} — ${title || UNTITLED}`]
   if (date) head.push(`- Date: ${date}`)
   if (location) head.push(`- Location: ${location}`)
+  if (entities && entities.length > 0) head.push(`- Entities: ${entities.join(', ')}`)
+  if (microState) head.push(`- Micro-State: ${oneLine(microState)}`)
+  if (pendingAction) head.push(`- Pending Action: ${oneLine(pendingAction)}`)
   writeFileSync(join(dir, file),
     `${head.join('\n')}\n\n## Player\n${playerInput ?? ''}\n\n## DM\n${dmOutput ?? ''}\n`)
   return file
+}
+
+/** Collapse a state value onto one line, since the header is parsed per line. */
+function oneLine(value) {
+  return String(value).replace(/\s*\n\s*/gu, ' ').trim()
 }
 
 /** Parse one transcript file into its header fields and its two messages. */
@@ -48,6 +67,9 @@ export function parseTranscript(text, number) {
   const titleMatch = text.match(/^#\s*Turn\s+\d+\s*[—–-]\s*(.+)$/m)
   const dateMatch = text.match(/^-\s*Date:\s*(.+)$/m)
   const locationMatch = text.match(/^-\s*Location:\s*(.+)$/m)
+  const entitiesMatch = text.match(/^-\s*Entities:\s*(.+)$/m)
+  const microMatch = text.match(/^-\s*Micro-State:\s*(.+)$/m)
+  const pendingMatch = text.match(/^-\s*Pending Action:\s*(.+)$/m)
   const playerMatch = text.match(/^##\s*Player\s*\n([\s\S]*?)(?=\n##\s|$)/m)
   const dmMatch = text.match(/^##\s*DM\s*\n([\s\S]*?)$/m)
   const clean = (value) => (value === undefined ? undefined : value.trim())
@@ -56,6 +78,11 @@ export function parseTranscript(text, number) {
     title: clean(titleMatch?.[1]) || UNTITLED,
     date: clean(dateMatch?.[1]) ?? null,
     location: clean(locationMatch?.[1]) ?? null,
+    entities: entitiesMatch === null
+      ? []
+      : entitiesMatch[1].split(',').map((name) => name.trim()).filter((name) => name.length > 0),
+    microState: clean(microMatch?.[1]) ?? null,
+    pendingAction: clean(pendingMatch?.[1]) ?? null,
     player: clean(playerMatch?.[1]) ?? '',
     dm: clean(dmMatch?.[1]) ?? '',
   }
@@ -70,6 +97,30 @@ export function transcriptFiles(id) {
     .filter((entry) => entry.match)
     .map((entry) => ({ file: entry.file, number: Number.parseInt(entry.match[1], 10) }))
     .sort((a, b) => a.number - b.number)
+}
+
+/**
+ * One parsed turn's messages in recall form: stable id, role, text, and the scene
+ * snapshot the turn closed in.
+ *
+ * The id shape (`NNNN:player` / `NNNN:dm`) is defined only here, so a listing that
+ * offers ids and a search that returns them cannot disagree. Both messages carry
+ * the turn's scene snapshot, so recalling either one reports the state at the end
+ * of that turn.
+ */
+export function messagesOf(turn) {
+  const meta = {
+    turn: turn.number,
+    title: turn.title,
+    date: turn.date,
+    location: turn.location,
+    microState: turn.microState,
+    pendingAction: turn.pendingAction,
+  }
+  const out = []
+  if (turn.player) out.push({ id: `${pad(turn.number)}:player`, role: 'player', text: turn.player, ...meta })
+  if (turn.dm) out.push({ id: `${pad(turn.number)}:dm`, role: 'dm', text: turn.dm, ...meta })
+  return out
 }
 
 /**
@@ -98,11 +149,7 @@ export function loadTranscripts(id) {
   const turns = transcriptFiles(id).map(({ file, number }) =>
     parseTranscript(readFileSync(join(dir, file), 'utf8'), number))
   const messages = []
-  for (const turn of turns) {
-    const meta = { turn: turn.number, title: turn.title, date: turn.date }
-    if (turn.player) messages.push({ id: `${pad(turn.number)}:player`, role: 'player', text: turn.player, ...meta })
-    if (turn.dm) messages.push({ id: `${pad(turn.number)}:dm`, role: 'dm', text: turn.dm, ...meta })
-  }
+  for (const turn of turns) messages.push(...messagesOf(turn))
   cache = { root, id, stamp, turns, messages }
   return cache
 }

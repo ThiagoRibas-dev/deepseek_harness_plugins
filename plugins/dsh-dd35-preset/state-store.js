@@ -4,8 +4,8 @@
  * Layout under the workspace's `campaign/` tree:
  *   campaign/campaign_registry.md            active-campaign registry (markdown)
  *   campaign/<id>/state.json                 session/scene state (mode, clock, initiative, scene)
- *   campaign/<id>/events/campaign_log.md     human-readable timeline (appended)
- *   campaign/<id>/events/transcripts/NNNN_turn.md
+ *   campaign/<id>/events/transcripts/NNNN_turn.md   the turn record (exchange + scene snapshot)
+ *   campaign/<id>/events/memory_index.json          derived scene index
  *   campaign/<id>/player/<entity>.json       character sheets (per-entity truth: HP, AC, conditions, resources)
  *   campaign/<id>/actors/<entity>.json       NPC/actor sheets
  *
@@ -67,7 +67,6 @@ export function campaignDir(id) { return join(campaignRoot(), id) }
 export function statePath(id) { return join(campaignDir(id), 'state.json') }
 export function eventsDir(id) { return join(campaignDir(id), 'events') }
 export function transcriptsDir(id) { return join(eventsDir(id), 'transcripts') }
-export function logPath(id) { return join(eventsDir(id), 'campaign_log.md') }
 export function playerDir(id) { return join(campaignDir(id), 'player') }
 export function actorsDir(id) { return join(campaignDir(id), 'actors') }
 
@@ -90,11 +89,30 @@ export function readJson(path) {
 
 // ---- registry ------------------------------------------------------------
 
-export function readActiveCampaign() {
-  const text = readText(registryPath())
+/**
+ * Read the active campaign id from a registry under an explicit root.
+ *
+ * Prompt assembly calls this before any tool has run, when the module-level
+ * binding may still be unset, so an unusable root yields `null` instead of the
+ * `path.join` throw a bare {@link registryPath} would raise.
+ * @param root - absolute workspace root, or any non-string to signal "unbound".
+ * @returns the active campaign id, or `null` when there is no usable registry.
+ */
+export function readActiveCampaignIn(root) {
+  if (typeof root !== 'string' || root.length === 0) return null
+  const text = readText(join(root, 'campaign', 'campaign_registry.md'))
   if (text === null) return null
   const match = text.match(/\*\*Identifier:\*\*\s*`([^`]+)`/)
   return match ? match[1] : null
+}
+
+export function readActiveCampaign() {
+  return readActiveCampaignIn(workspaceRoot)
+}
+
+/** One named file at the root of a campaign directory under an explicit root. */
+export function campaignFilePath(root, id, file) {
+  return join(root, 'campaign', id, file)
 }
 
 /** Directories under campaign/ that are not campaigns. */
@@ -143,7 +161,6 @@ export function defaultState(id, { name = id, setting = null } = {}) {
     initiative: { round: 0, order: [], index: 0, delayed: [], readied: [] },
     scene: { title: '', status: 'inactive', location: '', entities: [], micro_state: '', pending_action: '' },
     party: { light: '', marching_order: [] },
-    houserules: [],
     last_turn: null,
   }
 }
@@ -207,41 +224,6 @@ export function loadEntities(id, kind = 'pc') {
 
 // ---- campaign log --------------------------------------------------------
 
-/** Append one turn to `events/campaign_log.md`, seeding the header when absent. */
-export function appendLogTurn(id, { sceneTitle, dateTime, location, entities, microState, pendingAction, playerInput, dmOutput }) {
-  const path = logPath(id)
-  ensureDir(dirname(path))
-  const existed = existsSync(path)
-  const blocks = []
-  if (!existed) blocks.push(`# Campaign Log: ${id}`, '', '## Campaign Events', '')
-  blocks.push(`### ${sceneTitle}`)
-  blocks.push(`- **Date/Time:** ${dateTime}`)
-  if (location) blocks.push(`- **Current Location:** ${location}`)
-  if (entities && entities.length > 0) blocks.push(`- **Entities:** ${entities.join(', ')}`)
-  if (microState) blocks.push(`- **Micro-State:** ${microState}`)
-  if (pendingAction) blocks.push(`- **Pending Action:** ${pendingAction}`)
-  if (playerInput) blocks.push('', `**Player:** ${playerInput}`)
-  if (dmOutput) blocks.push('', `**DM:** ${dmOutput}`)
-  blocks.push('')
-  writeFileSync(path, `${existed ? '\n' : ''}${blocks.join('\n')}`, { flag: 'a' })
-  return path
-}
-
-/** Render the "Active State" section of the campaign log from session state + sheets. */
-export function renderActiveState(id, state) {
-  const entities = loadSceneEntities(id, state)
-  const party = entities.filter((entity) => entity.kind === 'pc')
-  const buffs = party.flatMap((entity) =>
-    (entity.conditions ?? []).map((cond) => `${entity.name}: ${typeof cond === 'string' ? cond : cond.name}`))
-  return [
-    '## Active State',
-    `- **Current Date:** ${state.clock?.date ?? 'unknown'}`,
-    `- **Time of Day:** ${state.clock?.time ?? 'unknown'}`,
-    `- **Current Location:** ${state.scene?.location ?? 'unknown'}`,
-    `- **Active Party:** ${party.map((entity) => `${entity.name} (${entity.hp}/${entity.max_hp} hp)`).join(', ') || 'none'}`,
-    `- **Active Buffs:** ${buffs.join(', ') || 'none'}`,
-  ].join('\n')
-}
 
 // ---- shared campaign accessors -------------------------------------------
 

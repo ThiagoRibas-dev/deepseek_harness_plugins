@@ -75,6 +75,17 @@
                 Incarnum: (from Magic of Incarnum). A system of soul-stuff where users shape raw Incarnum into Soulmelds (magic items) and power them by investing Essentia.
                 Shadowcasting: (from Tome of Magic). Shadowcasters use Mysteries (spells) with a unique preparation and recovery mechanic based on the ambient light level.
                 ```
+                Turn Memory
+                The verbatim transcript, the campaign log entry, and the scene index are automatically recorded. Since the transcript's title, location, and clock are read from `state.json` when the turn closes, you only need to use `update_scene` to manage memory state.
+                You can read the transcript of the session using these tools:
+                
+                | Tool            | Use |
+                |-----------------|-----|
+                | `list_memories` | The scene index: turn count, in-game date span, and which turn ranges belong to which scene. Call it with no arguments to see what is available to search. |
+                | `grep_memories` | Ranked snippets with stable IDs. Bare terms AND together, `"quoted phrases"` match exactly, `/regex/` for pattern matching, `-term` to exclude. Bound with `from_turn` / `to_turn`. |
+                | `fetch_memories`| The full text of the IDs you selected, plus the turns on either side. |
+                Use these tools **before** you invent a detail. An NPC’s name, a promise made twenty turns ago, the exact wording of a threat, a wound that never healed — all of it is searchable. `list_memories` will tell you which turn range to look in so that you don't have to guess continuity. Keep dm_notes.md up to date with details and reminders for yourself.
+                Oracles and Random Tables
                 In solo play, you don't have to decide everything. When something hasn't been established or isn't clearly decided, roll for it.
                 The oracle exists to create surprises and new directions and hooks — and those surprises are the heart of the game.
                 Use the tools below whenever the situation calls for uncertainty or inspiration:
@@ -88,8 +99,10 @@
                 | `explore_hex` | The party moves into a new hex of wilderness. |
                 | `draw_focus` | A scene needs a strong starting point (`Action`, `Detail`, or `Topic`). |
                 | `draw_keyword` | You want one concrete detail or omen to anchor a description. |
-                | `get_monster_ai` | A fight begins (`tactic`) or at the end of each round / when the situation shifts (`reaction`). |
-                | `roll_dice` | Rolls for Skill Checks, Attack Rolls, Saving Throws, and other such rules that need dice rolls should be made using this tool. |
+                | `roll_monster_behavior` | A fight begins (`tactic`) or at the end of each round / when the situation shifts (`reaction`). |
+                | `roll_dice` | The generic roll: an XdY pool, damage, a random table, an ad-hoc ruling. It takes `keep_highest`/`drop_lowest`, a `modifier`, and an optional `dc`. Reach for it when no more specific roll fits. |
+                | `roll_check` | Every saving throw, skill check, ability check, and opposed contest. Name it with `kind` ("Reflex save", "Spot", "Move Silently"); pass `opponent` for an opposed check instead of a DC. |
+                | `roll_attack` | Every attack roll. It confirms critical threats, rolls the damage dice, and with `apply: true` writes the damage and the resulting 3.5e status straight to the target's sheet. |
                 Feel free to make frequent use of these tools as sources of inspiration and creativity during play rather than treating them as a last resort.
                 If too many turns goes by without using any of them, you probably decided too much yourself.
               suffix: Your working directory is {{cwd}}.
@@ -115,6 +128,17 @@
             name: 'file:///export/DownloadsSSD/SHARED/harnesses/dsh/plugins/dsh-dd35-preset/mechanics.js'
           - id: dd35-reference
             name: 'file:///export/DownloadsSSD/SHARED/harnesses/dsh/plugins/dsh-dd35-preset/reference.js'
+          # Optional campaign files, read from the ACTIVE CAMPAIGN directory on
+          # every request (`campaign/<id>/dm_persona.md`, `campaign/<id>/dm_notes.md`)
+          # so switching campaigns or editing a file needs no restart.
+          # `dm_persona.md` extends the persona above as a system-prompt section;
+          # `dm_notes.md` arrives as a runtime-context snapshot instead, so the
+          # DM writing notes never invalidates the cached system-prompt prefix.
+          - id: dd35-prompt
+            name: 'file:///export/DownloadsSSD/SHARED/harnesses/dsh/plugins/dsh-dd35-preset/prompt.js'
+            config:
+              personaMaxBytes: 32768
+              notesMaxBytes: 16384
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'
           - id: tool-fs-search

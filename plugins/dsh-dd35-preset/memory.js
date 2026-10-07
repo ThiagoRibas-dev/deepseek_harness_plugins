@@ -4,9 +4,9 @@
  * Two halves, one concern:
  *
  *   1. **Automatic capture.** A completed turn is written to
- *      `events/transcripts/NNNN_turn.md`, appended to `events/campaign_log.md`,
- *      and folded into `events/memory_index.json` — with no tool call and no
- *      model cooperation. The model's only job is `update_scene`.
+ *      `events/transcripts/NNNN_turn.md`, holding the exchange and the scene state
+ *      at the end of the turn, and is folded into `events/memory_index.json`. No
+ *      tool call is involved. The model's only job is `update_scene`.
  *   2. **Recall.** `grep_memories` searches the transcripts and returns ranked
  *      snippets, `fetch_memories` expands the ones the model picks, and
  *      `list_memories` returns the scene index.
@@ -18,13 +18,13 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
-  appendLogTurn, bindWorkspaceFromSession, bounded, configure, loadState,
+  bindWorkspaceFromSession, bounded, configure, loadState,
   readActiveCampaign, requireCampaign, requireState, saveState,
 } from './state-store.js'
 import {
   UNTITLED, clip, commitTurnToIndex, excerpt, firstMatchIndex, loadTranscripts,
-  matchQuery, parseQuery, readMemoryIndex, renderMemoryIndex, resetMemoryCache,
-  selectTurns, writeTranscript,
+  matchQuery, messagesOf, parseQuery, readMemoryIndex, renderMemoryIndex,
+  resetMemoryCache, selectTurns, writeTranscript,
 } from './memory-store.js'
 
 /** Register a tool whose transcript paths bind to the calling session's workspace. */
@@ -48,9 +48,62 @@ function isMainSession(session) {
   return session?.header?.origin !== 'subagent'
 }
 
-/** Genuine player input: user role and the player's own producer kind. Injected context never qualifies. */
-function isPlayerMessage(message) {
-  return message?.role === 'user' && message?.source?.kind === 'user'
+/**
+ * Genuine player input: a user-role message carrying the client-minted `rpcId`
+ * that only the prompt path sets.
+ *
+ * The rpcId is the load-bearing part. `SessionCommandController.prompt()` mints
+ * one from the request id for every prompt the Web client sends, while a
+ * producer that injects model-facing content as a user-role message has none.
+ * Keying on `kind === 'user'` alone was not enough: `dsh-context-pressure` used
+ * exactly that kind for its pre-compaction notice, so the notice was captured as
+ * the player's turn — written into the transcript as the player's own words. That plugin now declares `kind: 'context-pressure'`,
+ * and this is the second line of defence against the next producer that reuses
+ * `user` for a role reason.
+ *
+ * Known exception: ACP delivers real prompts as `{ kind: 'user' }` with no rpcId
+ * (`acp/session.ts:293`). A session driven that way records no turns under this
+ * predicate. ACP is not mounted in this profile; if it ever is, admit the
+ * rpcId-less `user` shape here deliberately rather than widening the kind test.
+ * @param message - one message from the session's derived history.
+ * @returns whether the player typed it.
+ */
+export function isPlayerMessage(message) {
+  return message?.role === 'user'
+    && message?.source?.kind === 'user'
+    && typeof message?.source?.rpcId === 'string'
+    && message.source.rpcId.length > 0
+}
+
+/**
+ * Assistant turns a connector authored itself rather than a model.
+ *
+ * A connector that must stand in for a reply which will never exist — the case
+ * `dsh-meridian-antigravity` handles by committing a notice instead of leaving the
+ * transcript on a tool result — delivers that notice as an ordinary assistant
+ * message, and the turn completes normally. It is a system disclaimer, not
+ * narration, so it must not enter the campaign record as the DM's words: it would
+ * land in the transcript and in the scene index, and `grep_memories` and
+ * `fetch_memories` would quote it back later as something the DM said.
+ *
+ * The entries are the connectors' own notice markers (`NOTICE_PREFIX` in
+ * `dsh-meridian-antigravity/lib/failure.js`). Keep the two in step.
+ */
+const CONNECTOR_NOTICE_PREFIXES = ['[Meridian Antigravity]']
+
+/**
+ * @param text - one assistant turn's visible text.
+ * @returns whether the turn carries a connector notice rather than only narration.
+ *
+ * A notice reaches this as either the whole turn or a block appended after a
+ * reply the backend cut short, and `textOf` joins blocks with a newline — so the
+ * marker is matched at the start of *any* line, not just the first. Matching it
+ * anywhere would be wrong: prose that merely mentions the connector is narration.
+ */
+export function isConnectorNotice(text) {
+  return String(text ?? '')
+    .split('\n')
+    .some((line) => CONNECTOR_NOTICE_PREFIXES.some((prefix) => line.trimStart().startsWith(prefix)))
 }
 
 function textOf(message) {
@@ -62,35 +115,86 @@ function textOf(message) {
 }
 
 /**
+ * Injected notice kinds that ask the model to do work rather than telling it
+ * something.
+ *
+ * A notice of one of these kinds is a task. Whatever the model says while
+ * carrying it out is about the notice, not about the player, so it must not be
+ * recorded as the DM's reply.
+ *
+ * `context-pressure` is the one observed doing this. It lands mid-turn at the
+ * pre-step boundary and asks the model to write a resumption note; in
+ * `seventh_moon` turn 137 the model answered the player's action, then the
+ * notice arrived, and the model closed the turn with an OOC status report about
+ * the file it had written — which became the recorded reply, while the real one
+ * was discarded.
+ *
+ * Add a kind here when a new producer starts asking for work. Reporting kinds
+ * (`runtime-context`, `skill-catalog`, `tool-jobs`, `subagent-settled`) do not
+ * belong: the model keeps working normally after them, and its last message is
+ * still the reply.
+ */
+const WORK_REQUESTING_NOTICE_KINDS = new Set(['context-pressure'])
+
+/**
  * Read the closing exchange out of a session's derived history.
  *
- * Walks back from the final assistant message so intervening injected context
- * (runtime-context snapshots, compaction summaries, goal notices) cannot be
- * mistaken for the player's words.
+ * Anchored on the player's message and read forward, so injected context
+ * (runtime-context snapshots, compaction summaries, goal notices) between the
+ * prompt and the reply cannot be mistaken for the player's words or for the
+ * reply.
  */
 function captureFrom(session) {
   const messages = session.deriveMessages()
-  let assistantAt = -1
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i].role === 'assistant' && textOf(messages[i])) { assistantAt = i; break }
-  }
-  if (assistantAt === -1) return null
   let playerAt = -1
-  for (let i = assistantAt - 1; i >= 0; i -= 1) {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
     if (isPlayerMessage(messages[i])) { playerAt = i; break }
   }
+  if (playerAt === -1) return { player: null, dm: null }
+  const replyAt = replyIndex(messages, playerAt)
+  if (replyAt === -1) return null
   return {
-    player: playerAt === -1 ? null : { id: messages[playerAt].id, text: textOf(messages[playerAt]) },
-    dm: textOf(messages[assistantAt]),
+    player: { id: messages[playerAt].id, text: textOf(messages[playerAt]) },
+    dm: textOf(messages[replyAt]),
   }
 }
 
 /**
- * Commit one captured turn: transcript, campaign log, and index row.
+ * Index of the assistant message that answers the player at `playerAt`.
  *
- * Every scene fact is read from `state.json` at write time, so the log keeps
- * getting micro-state, pending action, and location without the model passing
- * them in.
+ * Usually the turn's last assistant message with text, because a model narrates
+ * after its tool calls. The exception is a work-requesting notice injected after
+ * the model has already answered: the model then keeps working, and its closing
+ * message describes that work. The search therefore stops at the first such
+ * notice, and the text before it is the reply.
+ *
+ * A notice that arrives before the model has produced any text is part of the
+ * working phase, not a boundary: the model has not answered yet, and its next
+ * text is the answer. Both cases are in the corpus, so the guard is the
+ * presence of earlier text rather than the notice alone.
+ */
+function replyIndex(messages, playerAt) {
+  let last = -1
+  for (let i = playerAt + 1; i < messages.length; i += 1) {
+    const message = messages[i]
+    if (last !== -1 && isWorkRequestingNotice(message)) return last
+    if (message.role === 'assistant' && textOf(message)) last = i
+  }
+  return last
+}
+
+/** A user-role message from a producer that asks the model to act. */
+function isWorkRequestingNotice(message) {
+  return message?.role === 'user' && WORK_REQUESTING_NOTICE_KINDS.has(message.source?.kind)
+}
+
+/**
+ * Commit one captured turn: transcript and index row.
+ *
+ * Every scene fact is read from `state.json` at write time and written into the
+ * transcript header, so the record keeps micro-state, pending action, entities and
+ * location without the model passing them in. `state.json` holds only the current
+ * values, so the transcript is the only place that history is kept.
  */
 function commitTurn(id, turn) {
   const state = requireState(id)
@@ -103,14 +207,6 @@ function commitTurn(id, turn) {
     title,
     date,
     location: state.scene?.location || null,
-    playerInput: turn.player?.text ?? '',
-    dmOutput: turn.dm,
-  })
-
-  appendLogTurn(id, {
-    sceneTitle: title,
-    dateTime: date ?? '',
-    location: state.scene?.location,
     entities: state.scene?.entities,
     microState: state.scene?.micro_state,
     pendingAction: state.scene?.pending_action,
@@ -141,6 +237,12 @@ function capture(ctx, session, turn) {
     // A turn with no fresh player input (an agent-initiated continuation) is
     // not a new exchange, so there is nothing to record.
     if (!captured.player) return
+    // A connector notice is not fiction. The turn completed, but the DM produced
+    // nothing, so this is not canon for the same reason an errored turn is not.
+    if (isConnectorNotice(captured.dm)) {
+      ctx.logger.debug(`dd35-memory: turn ${turn} produced only a connector notice; not recording it`)
+      return
+    }
     const state = loadState(id)
     // Same player message as last time means this turn carried no new input.
     if (captured.player.id !== undefined && state?.last_turn?.player_message_id === captured.player.id) return
@@ -306,7 +408,7 @@ function registerTools(ctx) {
       + 'search and which turn ranges to search. Pass from_turn/to_turn for a bounded listing of turn headers.',
     parameters: {
       campaign: { type: 'string', description: 'Campaign identifier; defaults to the active campaign.' },
-      from_turn: { type: 'integer', description: 'With to_turn, list turn headers in this range instead of the scene index.' },
+      from_turn: { type: 'integer', description: 'With to_turn, list turn headers and their fetch_memories ids in this range instead of the scene index.' },
       to_turn: { type: 'integer', description: 'End of the turn range.' },
       limit: { type: 'integer', description: 'Maximum turns to list in a bounded range. Defaults to 40.' },
       rebuild: { type: 'boolean', description: 'Rebuild the index from the transcripts before returning it.' },
@@ -329,6 +431,9 @@ function registerTools(ctx) {
           turn: turn.number,
           title: turn.title,
           date: turn.date,
+          // Hand these straight to fetch_memories: without them, reading a named
+          // turn means synthesising the id shape and hoping the padding is right.
+          ids: messagesOf(turn).map((message) => message.id),
           opening: clip(turn.dm, 160),
         })),
       }

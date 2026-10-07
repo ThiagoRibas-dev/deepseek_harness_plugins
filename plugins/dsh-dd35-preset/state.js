@@ -29,7 +29,7 @@ const MODE_CONSTRAINTS = {
   encounter:
     'ENCOUNTER MODE: strict 6-second rounds. Resolve actions in initiative order and keep it visible. '
     + 'Enforce action types (standard / move / swift / immediate / full-round / free), 5-ft steps, and attacks of opportunity. '
-    + 'Never skip an NPC turn. At the end of the round, roll monster behaviour with get_monster_ai(phase="reaction").',
+    + 'Never skip an NPC turn. At the end of the round, roll monster behaviour with roll_monster_behavior(phase="reaction").',
   exploration:
     'EXPLORATION MODE: time passes in ~10-minute increments (hours overland). Track marching order, light and vision, '
     + 'and use Perception/Search/Disable Device/Survival checks. Ask what the party does for the next stretch.',
@@ -163,7 +163,7 @@ export function apply(ctx, config = {}) {
         mode: state?.mode ?? 'exploration',
         scene: state?.scene ?? null,
         hint: phase === 'fresh_session'
-          ? 'Recap prior events from events/campaign_log.md before resuming.'
+          ? 'Recap prior events with list_memories, then fetch_memories for the turns you need.'
           : 'Resync with get_state, then run the gameplay loop.',
       }
     },

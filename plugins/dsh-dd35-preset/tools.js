@@ -3,10 +3,12 @@
  *
  * Registers the 10 oracle/generation/dice tools directly on the harness tool
  * registry (no external MCP server, no child process). Data lives beside this
- * file in `tables.json`, generated from `rules/dm_aids/tables/*.csv`.
+ * file in `tables.json`, generated from `rules/dm_aids/tables/*.csv`; every roll
+ * comes from the shared `dice.js` engine.
  */
 import { readFileSync } from 'node:fs'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { againstDc, randInt, rollD100, rollD20, rollPool } from './dice.js'
 
 export const name = 'dd35-tools'
 export const inject = ['tools']
@@ -14,32 +16,6 @@ export const inject = ['tools']
 const TABLES = JSON.parse(readFileSync(new URL('./tables.json', import.meta.url), 'utf8'))
 
 const text = (value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }]
-
-// ---- dice ----
-function randInt(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min
-}
-function rollD20() { return randInt(1, 20) }
-function rollD100() { return randInt(1, 100) }
-function rollGeneric(x, y, keepHighest, dropLowest) {
-  if (x <= 0 || y <= 0) return { error: 'X and Y must be positive integers.' }
-  const rolls = Array.from({ length: x }, () => randInt(1, y))
-  let kept = rolls.slice()
-  if (dropLowest > 0 && dropLowest < kept.length) {
-    kept.sort((a, b) => a - b)
-    kept = kept.slice(dropLowest)
-  }
-  if (keepHighest > 0 && keepHighest < kept.length) {
-    kept.sort((a, b) => b - a)
-    kept = kept.slice(0, keepHighest)
-  }
-  return {
-    notation: `${x}d${y}`,
-    raw_rolls: rolls,
-    kept_rolls: kept,
-    total: kept.reduce((a, b) => a + b, 0),
-  }
-}
 
 // ---- table helpers (mirror data_loader.py) ----
 function table(name) { return TABLES[name] ?? [] }
@@ -213,7 +189,7 @@ export function apply(ctx) {
   }))
 
   ctx.tools.register(defineTool({
-    name: 'get_monster_ai',
+    name: 'roll_monster_behavior',
     description:
       "Rolls for monster behavior. phase must be 'tactic' (initial encounter) or 'reaction' (mid-combat shift).",
     parameters: {
@@ -235,19 +211,41 @@ export function apply(ctx) {
   ctx.tools.register(defineTool({
     name: 'roll_dice',
     description:
-      'Rolls an arbitrary XdY dice pool with optional modifiers. '
-      + 'x: number of dice; y: number of sides per die; '
-      + 'keep_highest: keep only the N highest rolls (0 = keep all); '
-      + 'drop_lowest: drop the N lowest rolls (0 = drop none).',
+      'Roll a dice pool: x dice with y sides each, optionally keeping the highest and/or dropping the lowest, '
+      + 'then add a modifier and optionally resolve against a DC. This is the single generic roll — use it for '
+      + 'damage, random tables, and ad-hoc rulings. For a named saving throw, skill or ability check, or an '
+      + 'opposed contest, use roll_check; for an attack, use roll_attack.',
     parameters: {
       x: { type: 'integer', required: true, description: 'Number of dice.' },
       y: { type: 'integer', required: true, description: 'Number of sides on each die.' },
+      modifier: { type: 'integer', description: 'Added to the kept total. Defaults to 0.' },
+      dc: { type: 'integer', description: 'When given, also returns success and margin (total >= DC succeeds).' },
+      kind: { type: 'string', description: 'Label for the roll, e.g. "4d6 drop lowest" or "fireball damage".' },
+      note: { type: 'string', description: 'Free-text context echoed back.' },
       keep_highest: { type: 'integer', description: 'Keep only the N highest rolls.' },
       drop_lowest: { type: 'integer', description: 'Drop the N lowest rolls.' },
     },
     output: { schema: { type: 'json' }, render: (_a, v) => text(v) },
-    execute({ x, y, keep_highest = 0, drop_lowest = 0 }) {
-      return rollGeneric(x, y, keep_highest, drop_lowest)
+    execute({ x, y, modifier = 0, dc, kind, note, keep_highest = 0, drop_lowest = 0 }) {
+      const pool = rollPool(x, y, { keepHighest: keep_highest, dropLowest: drop_lowest })
+      if (pool.error !== undefined) return pool
+      const total = pool.total + modifier
+      const result = {
+        kind: kind ?? pool.notation,
+        notation: pool.notation,
+        raw_rolls: pool.raw_rolls,
+        kept_rolls: pool.kept_rolls,
+        modifier,
+        total,
+      }
+      if (note !== undefined) result.note = note
+      // A natural 20 or 1 is only a critical when a single d20 came up.
+      if (x === 1 && y === 20) {
+        if (pool.kept_rolls[0] === 20) result.critical = 'success'
+        else if (pool.kept_rolls[0] === 1) result.critical = 'failure'
+      }
+      if (dc !== undefined) Object.assign(result, againstDc(total, dc))
+      return result
     },
   }))
 }
