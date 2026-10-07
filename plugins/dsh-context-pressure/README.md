@@ -42,6 +42,15 @@ longer the only surviving record.
 - Hysteresis: one nudge per pressure episode. The flag re-arms only when the
   window drops back below `rearmRatio`, which in practice means a compaction
   landed. Without it the nudge would repeat on every step.
+- Source kind: **`context-pressure`**, not `user`. `MessageSourceMap` is a
+  merge-extensible sum type and consumers fall through unknown kinds
+  (`dsh-llm/src/message.ts:103`), so a producer declaring its own kind is the
+  supported move. Reusing `user` made the notice indistinguishable from a real
+  prompt to any consumer that switches on the kind — and one did: `dd35-memory`
+  keyed on `kind === 'user'` and recorded these notices as the player's own
+  words in `campaign_log.md` and in the turn transcripts. The message text
+  marking the notice as automatic was never sufficient, because the consumer had
+  no reason to read it.
 
 ## Mounting
 
@@ -90,7 +99,8 @@ that route.
 ## Rollback
 
 Disable or remove the `context-pressure` row. The plugin writes nothing durable
-of its own; the only trace is the steered message in the affected sessions.
+of its own; the only trace is the steered message in the affected sessions,
+source-tagged `context-pressure` so consumers can tell it from a prompt.
 
 ## Layout
 

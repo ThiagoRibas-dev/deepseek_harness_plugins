@@ -35,11 +35,23 @@ export const inject = ['llm', 'tokenMeter']
 /**
  * Source kind for the injected message.
  *
- * Deliberately an existing kind. A novel `source.kind` would be a new durable
- * vocabulary item, and session-format validation is the wrong fight to pick for
- * a nudge; the text itself marks the message as automatic.
+ * Its own kind, deliberately. `MessageSourceMap` is a merge-extensible sum type
+ * whose consumers "fall through unknown kinds" (`dsh-llm/src/message.ts:103`),
+ * so declaring one is the supported move, and every other in-tree producer does
+ * it — `runtime-context`, `model-selection`, `skill-catalog`, `goal`.
+ *
+ * The earlier choice to reuse `kind: 'user'` was not safe. Reusing it makes the
+ * notice indistinguishable from a real prompt to any consumer that switches on
+ * the kind, and one did: `dd35-memory` recorded these notices to
+ * `campaign_log.md` and to the turn transcripts as the player's own words. The
+ * text marking the message as automatic was never enough, because the consumer
+ * had no reason to read the text.
+ *
+ * `user` remains the correct *role* — the notice is model-facing input, not a
+ * system instruction — and the kind is what keeps it from being read as a
+ * prompt.
  */
-const NOTICE_SOURCE = Object.freeze({ kind: 'user' })
+const NOTICE_SOURCE = Object.freeze({ kind: 'context-pressure' })
 
 /**
  * Register the pre-step nudge.

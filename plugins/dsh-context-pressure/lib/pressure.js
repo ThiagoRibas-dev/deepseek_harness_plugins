@@ -19,7 +19,7 @@ export const DEFAULTS = Object.freeze({
   rearmRatio: 0.6,
   message: 'Context is at {percent}% of this model\'s window and earlier history may be compacted soon. '
     + 'Before continuing, write anything you would need to resume — current state, decisions, and open '
-    + 'threads — to your durable notes.',
+    + 'threads — to a file you can read later.',
 })
 
 /**
