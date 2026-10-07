@@ -150,55 +150,75 @@ The two checks that do work are behavioural:
   `compaction/prune` mid-batch is the only signal, and it is a weak one.
 
 As of 2026-10-07 no session has run on `standard` since the override loaded, so the swap is
-unproven there. In `dd35` it is worse than unproven: the guard has been declared since
-2026-10-04 10:36 and has demonstrably **not** deferred when it should have.
+unproven there.
 
-### The guard did not defer on 2026-10-04 (unresolved)
+### The guard could never run, until 2026-10-07
 
-Four `dd35` sessions pruned after the guarded patch was declared *and* after the process
-restart that read it (patch commit `8a0ab42` at 10:36, restart at 11:32, sessions at
-13:12, 13:32, 13:34 and 14:38). In each one the first prune lands with the surface ending
-on a `tool/result` that no assistant message has answered — the state `isMidTurn` exists
-to defer — and three of the four took a `MERIDIAN_CONTINUATION_CONFLICT` within six
-events of the prune burst:
+`BasicCompactionEngine` reaches the pruner through `ctx.get('toolResultPruner')`
+(`compaction-basic/src/index.ts:292`) and calls a method on that service. Cordis invokes a
+service method with a **shadow** receiver rather than the instance (`createShadowMethod`,
+`cordis/lib/index.js:116`), and a `#private` field is not installed on the shadow. So the
+original `this.#guard` threw:
 
 ```
-session-4678ab35   prune 359,361,...,369  conflict 375
-   355 assistant/message [call:read]  356 tool/call  357 tool/result  358 step/end
-session-53bcb5d2   prune 427,429,...,441  conflict 447
-session-f349a9a1   prune 90                        conflict 96
-session-2918da11   prune 141,143,145               no conflict
+TypeError: Cannot read private member #guard from an object
+           whose class did not declare it
+    at Proxy.pruneSession (pruner.js:68)
 ```
 
-Every input the guard reads checks out in all four:
+The throw is not caught at the call site, so before the fix an over-budget prune did not
+defer — it aborted the compaction pass. `engine.js` had the same defect in `summarize()`
+via `#guard`, `#rejected` and `#attempts`.
 
-- `routedProvider` was `meridian-antigravity` at every `request/header`, and every
-  assistant message in those sessions came from it, so `contractProviders` matched;
-- `SURFACE_EVENT_TYPES` is `system/developer/user/assistant/tool/result`
-  (`core/session/src/surface.ts:50`), so a `step/end` between the result and the prune is
-  not on the surface and the tail really was the tool result;
-- `toolPairingBalancedBefore` is false for a tool-result tail by construction — the cut
-  before it still has the call open — and `isMidTurn` returns true for exactly that case
-  in `tests/pending-batch.test.js:45`;
-- the guarded rows were in the dd35 patch before the restart, with `deferWhenBatchPending:
-  true` and `contractProviders: [meridian-antigravity]`.
+Both classes now keep that state in public fields, assigned once in the constructor and
+never reassigned (a write through the shadow would land on the shadow). This is why the
+guard has never been observed doing anything in any realm since it was written.
 
-So `pruneSession` should have returned `DEFERRED` and written no events. It wrote six.
-Two mechanisms remain and nothing offline separates them: the engine resolved a different
-`toolResultPruner` than the guarded row (`compaction-basic/src/index.ts:292` reads it from
-`ctx.get`), or the predicate saw a surface that differs from the reconstructed one. The
-session log records neither, and `pruner.js` logs the deferral at `debug`, which the
-harness journal does not carry.
+`tests/pruner-deferral.test.js` reproduces it. It builds a real `Session`, runs the shipped
+pruner as a control, then runs the guarded one **through `ctx.get`**, which is the path the
+engine takes — the earlier unit tests covered `shouldDeferPrune`, a pure predicate that
+nothing in the live path was obliged to call, so a broken override was invisible:
 
-**What would settle it:** a test that drives `GuardedToolResultPruner.pruneSession` — not
-`shouldDeferPrune` — against a session whose surface ends on an unanswered tool result, and
-asserts the parent never ran. No test does that today; `pending-batch.test.js` covers the
-pure helpers only, which is why a broken override would be invisible. If that passes, the
-remaining suspect is the service the engine resolves.
+```
+✔ the shipped pruner prunes this fixture, so the control is real
+✔ the guarded pruner is the service the engine resolves
+✔ a surface ending on an unanswered tool result is deferred
+✔ the deferral is the guard, not an inert pruner
+✔ a route outside contractProviders is pruned as before
+✔ the deferral switch turns it off
+✔ an unmatched tool result is deferred rather than throwing
+✔ guard state survives the service shadow, which is why it is not #private
+✔ the engine guard state is reachable through its service too
+```
 
-Until then, treat the guard as unproven everywhere. No `dd35` session has pruned since
-2026-10-04 14:38, which is consistent with the deferral working and with the pruner simply
-not running.
+Run it with `./tests/run.sh`, which builds a module-resolution rig; the pure tests also run
+standalone with `node --test tests/pending-batch.test.js tests/summary-quality.test.js`.
+
+The engine's *decision* is still only pinned at the property-read level. Driving
+`summarize()` through the service would need a full agent and a real summarisation call, so
+a regression that made the engine read a shadow-local field would still be caught, but one
+that broke the validation logic would not.
+
+### The chronology that looked like a failure
+
+An earlier revision of this file claimed the guard had demonstrably failed to defer on
+2026-10-04, citing four `dd35` sessions. That was wrong: it joined prune events to the
+sessions' **file** mtimes instead of to the events' own timestamps, which are much earlier.
+
+The events say:
+
+| session | pruned at | conflict at |
+| --- | --- | --- |
+| `f349a9a1` | 2026-10-04 10:12:48 | 10:12:48 |
+| `4678ab35` | 2026-10-04 10:32:50 | 10:32:50 |
+| `53bcb5d2` | 2026-10-04 10:34:28 | 10:34:28 |
+| `2918da11` | 2026-10-04 11:03:54 | — |
+
+The guarded patch was committed at 10:36:50 and the process that read it started at
+11:32:35, so three of those sessions pruned *before the guard existed on disk* and the
+fourth before any process had loaded it. **No `dd35` session has pruned under a process that
+had the guard loaded**, which is consistent with the deferral working — and equally
+consistent with the exception above, which is what was actually happening.
 
 If a `disabled` flag did not apply, move those two rows into the profile patch
 `$DSH_PROFILE_DIR/cordis.patch.yml`, which is applied after every bundle layer,
@@ -241,7 +261,11 @@ engine.js               GuardedCompactionEngine : BasicCompactionEngine
 pruner.js               GuardedToolResultPruner : ToolResultPruner
 lib/summary-quality.js  substance rules (pure, offline-tested)
 lib/pending-batch.js    mid-turn predicate (pure, offline-tested)
-tests/                  node --test tests/*.test.js
+tests/run.sh            module-resolution rig; runs every test below
+tests/pending-batch.test.js    the mid-turn predicate (pure)
+tests/summary-quality.test.js  the substance rules (pure)
+tests/preset-override.test.js  the preset declaration copy, against the installed file
+tests/pruner-deferral.test.js  a real Session through ctx.get, which is the engine's path
 cordis.patch.yml        disables the shipped pair, inserts the guards
 ```
 

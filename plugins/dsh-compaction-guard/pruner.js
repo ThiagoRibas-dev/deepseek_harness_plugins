@@ -45,7 +45,20 @@ export class GuardedToolResultPruner extends ToolResultPruner {
     contractProviders: z.array(z.string()),
   })
 
-  #guard
+  /**
+   * Resolved guard configuration.
+   *
+   * A public field, deliberately, and assigned once in the constructor.
+   * `BasicCompactionEngine` reaches this class through
+   * `ctx.get('toolResultPruner')`, and Cordis invokes a service method with a
+   * *shadow* receiver rather than the instance (`createShadowMethod`,
+   * `cordis/lib/index.js:116`). A `#private` field is not installed on that
+   * shadow, so `this.#guard` throws `TypeError: Cannot read private member
+   * #guard from an object whose class did not declare it` and the deferral never
+   * runs. A public field is read through the shadow's delegation to the instance.
+   * Never reassign it: a write through the shadow would land on the shadow.
+   */
+  guard
 
   /**
    * @param ctx - plugin context.
@@ -54,7 +67,7 @@ export class GuardedToolResultPruner extends ToolResultPruner {
   constructor(ctx, config = {}) {
     // The parent rejects unknown config keys, so guard fields must not reach it.
     super(ctx, parentConfigOf(config))
-    this.#guard = resolvePruneGuard(config)
+    this.guard = resolvePruneGuard(config)
   }
 
   /**
@@ -65,7 +78,7 @@ export class GuardedToolResultPruner extends ToolResultPruner {
    * @returns the parent's prune result, or an empty result when deferred.
    */
   pruneSession(session) {
-    if (shouldDeferPrune(session, this.#guard, PAIRING)) {
+    if (shouldDeferPrune(session, this.guard, PAIRING)) {
       this.ctx.logger?.debug?.(
         'compaction-guard: deferring tool-result prune; the surface is mid-turn on a contract provider',
       )

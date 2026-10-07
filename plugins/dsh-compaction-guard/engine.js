@@ -62,11 +62,22 @@ export class GuardedCompactionEngine extends BasicCompactionEngine {
     maxDegenerateRetries: z.number().step(1).min(0).default(GUARD_DEFAULTS.maxDegenerateRetries),
   })
 
-  #guard
+  /**
+   * Resolved guard configuration and per-session retry state.
+   *
+   * Public fields, deliberately. `summarize()` is this class's hook on the
+   * success path, and the engine that calls it can be reached through
+   * `ctx.compaction`, where Cordis invokes the method with a *shadow* receiver
+   * (`createShadowMethod`, `cordis/lib/index.js:116`) rather than the instance.
+   * A `#private` field is not installed on that shadow, so `this.#guard` throws
+   * and the guard never runs. Never reassign these: a write through the shadow
+   * would land on the shadow rather than the instance.
+   */
+  guard
   /** Most recently rejected summary text, per session, to stop retry convergence. */
-  #rejected = new WeakMap()
+  rejected = new WeakMap()
   /** Rejections consumed for the current compaction, per session. */
-  #attempts = new WeakMap()
+  attempts = new WeakMap()
 
   /**
    * @param ctx - plugin context.
@@ -75,7 +86,7 @@ export class GuardedCompactionEngine extends BasicCompactionEngine {
   constructor(ctx, config = {}) {
     // The parent rejects unknown config keys, so guard fields must not reach it.
     super(ctx, parentConfigOf(config))
-    this.#guard = resolveGuardConfig(config)
+    this.guard = resolveGuardConfig(config)
     ctx.on('compaction/summary-error', (payload, next) => this.#onSummaryError(payload, next))
   }
 
@@ -92,11 +103,11 @@ export class GuardedCompactionEngine extends BasicCompactionEngine {
     const result = await super.summarize(input, agent, signal)
     const verdict = validateSummary(result?.summary, {
       inputChars: measureInputChars(input),
-      rejectedText: this.#rejected.get(agent.session),
-    }, this.#guard)
+      rejectedText: this.rejected.get(agent.session),
+    }, this.guard)
 
     if (!verdict.ok) {
-      this.#rejected.set(agent.session, verdict.text)
+      this.rejected.set(agent.session, verdict.text)
       this.ctx.logger?.warn?.(
         `compaction-guard: rejected a summary for ${agent.session.id}: ${verdict.reason}`,
       )
@@ -104,8 +115,8 @@ export class GuardedCompactionEngine extends BasicCompactionEngine {
     }
 
     // A substantive summary clears the retry state for the next compaction.
-    this.#rejected.delete(agent.session)
-    this.#attempts.delete(agent.session)
+    this.rejected.delete(agent.session)
+    this.attempts.delete(agent.session)
     return result
   }
 
@@ -121,16 +132,16 @@ export class GuardedCompactionEngine extends BasicCompactionEngine {
    */
   #onSummaryError(payload, next) {
     if (!(payload?.error instanceof DegenerateSummaryError)) return next()
-    const tries = this.#attempts.get(payload.session) ?? 0
-    if (tries >= this.#guard.maxDegenerateRetries) {
+    const tries = this.attempts.get(payload.session) ?? 0
+    if (tries >= this.guard.maxDegenerateRetries) {
       this.ctx.logger?.warn?.(
         `compaction-guard: giving up after ${tries} rejected summaries; committing nothing`,
       )
       return false
     }
-    this.#attempts.set(payload.session, tries + 1)
+    this.attempts.set(payload.session, tries + 1)
     this.ctx.logger?.info?.(
-      `compaction-guard: retrying summarization after rejection ${tries + 1}/${this.#guard.maxDegenerateRetries}`,
+      `compaction-guard: retrying summarization after rejection ${tries + 1}/${this.guard.maxDegenerateRetries}`,
     )
     return true
   }

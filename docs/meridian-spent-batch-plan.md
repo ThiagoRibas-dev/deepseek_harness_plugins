@@ -472,14 +472,16 @@ with the same strings.
    `compaction/prune`. Two things are worth knowing about this check, both learned the hard way:
    - a `compaction/prune` between an `assistant/message` carrying a tool call and its `tool/result` is
      the failure signal;
-   - **the absence of one is weak evidence.** No `dd35` session has pruned since 2026-10-04 14:38, so a
-     guarded realm that never prunes looks identical to one whose pruner is broken. What would settle it
-     is a prune landing at a *turn boundary*, which the guard permits by design.
-   - **and the deferral is already disproven once.** Four `dd35` sessions pruned on 2026-10-04 13:12–14:38
-     after the guarded patch was declared *and* after the restart that read it, each with the surface
-     ending on an unanswered tool result. Full evidence and the decisive experiment are in
-     `plugins/dsh-compaction-guard/README.md`. Do not treat a `standard` session that never prunes as
-     confirmation of anything.
+   - **the absence of one is weak evidence.** The latest prune event in any `dd35` session is
+     2026-10-04 11:03:54, before the restart that first loaded the guard, so a guarded realm that never
+     prunes looks identical to one whose pruner is broken. What would settle it is a prune landing at a
+     *turn boundary*, which the guard permits by design.
+   - **and the guard was in fact broken, in a way no session log could show.** Cordis invokes a service
+     method with a shadow receiver, so the pruner's `#guard` field threw a `TypeError` on every call and
+     the compaction pass aborted rather than deferring. Fixed on 2026-10-07 with public fields and pinned
+     by `plugins/dsh-compaction-guard/tests/pruner-deferral.test.js`; it needs a restart. An earlier
+     revision of this checklist claimed the opposite — that the guard had failed to defer on 2026-10-04 —
+     which came from joining prune events to session file mtimes rather than event timestamps.
 
 ### 9.2 The repair makes the next request ordinary again
 
