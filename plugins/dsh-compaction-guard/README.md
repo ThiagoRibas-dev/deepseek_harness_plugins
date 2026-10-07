@@ -149,9 +149,56 @@ The two checks that do work are behavioural:
   working one. `pruner.js` logs the deferral at `debug`; without that level, absence of
   `compaction/prune` mid-batch is the only signal, and it is a weak one.
 
-As of 2026-10-07 neither check has been met: no `dd35` session has ever logged a
-`compaction/prune` event, and no session has run on `standard` since the override loaded.
-Treat the guard as unproven in a preset realm until one of them passes.
+As of 2026-10-07 no session has run on `standard` since the override loaded, so the swap is
+unproven there. In `dd35` it is worse than unproven: the guard has been declared since
+2026-10-04 10:36 and has demonstrably **not** deferred when it should have.
+
+### The guard did not defer on 2026-10-04 (unresolved)
+
+Four `dd35` sessions pruned after the guarded patch was declared *and* after the process
+restart that read it (patch commit `8a0ab42` at 10:36, restart at 11:32, sessions at
+13:12, 13:32, 13:34 and 14:38). In each one the first prune lands with the surface ending
+on a `tool/result` that no assistant message has answered — the state `isMidTurn` exists
+to defer — and three of the four took a `MERIDIAN_CONTINUATION_CONFLICT` within six
+events of the prune burst:
+
+```
+session-4678ab35   prune 359,361,...,369  conflict 375
+   355 assistant/message [call:read]  356 tool/call  357 tool/result  358 step/end
+session-53bcb5d2   prune 427,429,...,441  conflict 447
+session-f349a9a1   prune 90                        conflict 96
+session-2918da11   prune 141,143,145               no conflict
+```
+
+Every input the guard reads checks out in all four:
+
+- `routedProvider` was `meridian-antigravity` at every `request/header`, and every
+  assistant message in those sessions came from it, so `contractProviders` matched;
+- `SURFACE_EVENT_TYPES` is `system/developer/user/assistant/tool/result`
+  (`core/session/src/surface.ts:50`), so a `step/end` between the result and the prune is
+  not on the surface and the tail really was the tool result;
+- `toolPairingBalancedBefore` is false for a tool-result tail by construction — the cut
+  before it still has the call open — and `isMidTurn` returns true for exactly that case
+  in `tests/pending-batch.test.js:45`;
+- the guarded rows were in the dd35 patch before the restart, with `deferWhenBatchPending:
+  true` and `contractProviders: [meridian-antigravity]`.
+
+So `pruneSession` should have returned `DEFERRED` and written no events. It wrote six.
+Two mechanisms remain and nothing offline separates them: the engine resolved a different
+`toolResultPruner` than the guarded row (`compaction-basic/src/index.ts:292` reads it from
+`ctx.get`), or the predicate saw a surface that differs from the reconstructed one. The
+session log records neither, and `pruner.js` logs the deferral at `debug`, which the
+harness journal does not carry.
+
+**What would settle it:** a test that drives `GuardedToolResultPruner.pruneSession` — not
+`shouldDeferPrune` — against a session whose surface ends on an unanswered tool result, and
+asserts the parent never ran. No test does that today; `pending-batch.test.js` covers the
+pure helpers only, which is why a broken override would be invisible. If that passes, the
+remaining suspect is the service the engine resolves.
+
+Until then, treat the guard as unproven everywhere. No `dd35` session has pruned since
+2026-10-04 14:38, which is consistent with the deferral working and with the pruner simply
+not running.
 
 If a `disabled` flag did not apply, move those two rows into the profile patch
 `$DSH_PROFILE_DIR/cordis.patch.yml`, which is applied after every bundle layer,
