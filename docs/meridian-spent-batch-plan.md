@@ -422,14 +422,14 @@ $ node --test tests/*.test.js
   result, so by the same argument it could commit the notice too. Left alone
   deliberately: it is a separate decision with its own test, and changing two things
   at once would make the next live result ambiguous.
-- **Request bodies are nowhere.** `exchanges` is metadata only; Meridian's activity API
+- **Request bodies are no longer nowhere.** `exchanges` is metadata only; Meridian's activity API
   (`/providers/status`) is counts only; `agy` is not on this host (the D&D35 workspace
-  has a Windows launcher, `run-antigravity.bat`). Remaining options: a config-flagged
-  dump in the connector (~30 lines, off by default), or whatever the Antigravity side
-  writes. **`policy.cjs` is now read and is *not* the content filter** — it is a tool
-  allow-list hook (`allow`/`deny` per `toolCall`, writing `policy-audit.jsonl`), and its
-  baked-in allow-list matches the current dd35 tool names (`roll_check`,
-  `roll_monster_behavior`). It neither configures nor can lift the safety filter. The
+  has a Windows launcher, `run-antigravity.bat`). The config-flagged dump in the connector now exists:
+  `captureRequestBodies` + `captureDir` + `captureMaxFiles`, off by default, one file per dispatch,
+  bounded, pruned, and never fatal. See §9.3. **`policy.cjs` is now read and is *not* the content
+  filter** — it is a tool allow-list hook (`allow`/`deny` per `toolCall`, writing
+  `policy-audit.jsonl`), and its baked-in allow-list matches the current dd35 tool names
+  (`roll_check`, `roll_monster_behavior`). It neither configures nor can lift the safety filter. The
   `policy-audit.jsonl` in that workspace is 0 bytes, so nothing has been denied yet.
 - **Prompt swing unexplained.** 93K → 43K → 65K tokens with no compaction and no new
   tool calls. Pruning accounts for ≤14K. Use the ledger query in §2 to check it from
@@ -440,9 +440,10 @@ $ node --test tests/*.test.js
 - **A branch is not a fresh session** — `fork` truncates history with no in-session
   marker. Recorded in `docs/chat-controls-implementation-plan.md` Phase 7.
 - **A restart is owed.** Everything in §6/§7 was written after the user's last restart,
-  as were the §5 dd35 notice guard and `dm_notes` guidance. Plugin code is imported once
-  per process; no `cordis.patch.yml` changed, so no bundle reinstall is needed — only a
-  restart.
+  as were the §5 dd35 notice guard and `dm_notes` guidance, and so were the compaction-guard
+  `preset-standard` override and the refused-continuation repair. Plugin code is imported once
+  per process; no bundle was reinstalled and no manifest changed, so only a restart is needed.
+  §9 is the checklist for what to observe after it.
 
 ## 9. Live verification owed — the restart checklist
 
