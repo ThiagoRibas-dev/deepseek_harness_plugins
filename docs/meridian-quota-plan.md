@@ -68,6 +68,10 @@ The retryable set is declared in `lib/config.js`:
 retryableCodes: ['RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT', 'EMPTY_RESPONSE', 'MERIDIAN_PENDING_REPLAYABLE']
 ```
 
+That list is what this plan shipped against. It has since gained
+`MERIDIAN_AGENT_INTERRUPTED` — Meridian's dropped-agent 502, split out of `SERVER` and retryable
+exactly as `SERVER` was; see [`meridian-spent-batch-plan.md`](meridian-spent-batch-plan.md).
+
 **Correction, found while implementing.** This section originally claimed that a quota 429 maps to
 `RATE_LIMIT` and is retried. It does not. `errors.js:156` already classifies a 429 whose message matches
 `QUOTA_HINTS` as `QUOTA` — the harness's own `QUOTA_EXCEEDED_CODE` (`llm/src/error.ts:28`), which is

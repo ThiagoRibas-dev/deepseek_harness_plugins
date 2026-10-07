@@ -241,6 +241,31 @@ Each phase ends in something demonstrable. Effort assumes familiarity with this 
 
 *Effort: easy (UI only).*
 
+**Correction, after a live failure — the gap is not only UI.** `fork` cuts the child's log at an event
+prefix (`atSeq`, `isSeeded: true`, `inheritedEventCount`), so every turn after the branch point is
+*absent* from the child: not summarised, not marked, not recoverable from inside that session. In the
+observed case — `session-dcb10dda`, "C7L - Flashback", forked at its parent's turn 2 while the parent
+had seven completed turns — the DM resumed into a history whose last user instruction was the parent
+turn's *"write the last two turns verbatim"*, and re-ran it, replaying a scene five turns out of date.
+The report was *"the last assistant response basically rewound the plot"*, and the user believed the
+session had been started fresh, because `forkAt` opens a new session window and `increaseTitle` names
+it like a new chat (`Hello` → `Hello (1)`).
+
+So branch navigation owes two things beyond enumeration:
+
+1. **A durable marker at the seed boundary.** `session/end-seed` already brackets the inherited region;
+   the *model-facing* half is what is missing. Without it a truncated prefix is indistinguishable from
+   a full history, and a resumed agent will act on whatever instruction sits at the head of the
+   fragment.
+2. **A visible affordance before the cut**, saying that everything after this turn is left behind.
+
+**Open question — is Branch correctly gated?** The turn-tail action row disables it via
+`branchUnavailable={data.branchUnavailable || hasLaterChatNode}`, yet the observed fork cut at turn 2
+while later turns existed in the log. Working hypothesis: `hasLaterChatNode` reflects the **loaded**
+transcript window, and the chat lazy-loads (`loadOlder`/`loadThrough`), so a turn that is merely not
+yet rendered looks like the tail and offers Branch. Worth confirming before building on that guard —
+if it holds, the same class of accidental fork is available to any user who branches before scrolling.
+
 ### Phase 8 — Include / exclude from model context
 
 **Deliverable:** keep a message visible to the human but hide it from the model.

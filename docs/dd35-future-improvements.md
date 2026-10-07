@@ -186,8 +186,14 @@ campaign/<id>/events/transcripts/0002_turn.md
 ```
 
 each containing the player's exact input and the DM's exact response under `## Player` / `## DM`
-headings, with the scene title in the header. `campaign_log.md` holds the curated timeline on top.
+headings, with the scene title, location, entities, micro-state and pending action in the header.
 An `events/memory_index.json` is maintained alongside for the context index (below).
+
+> **Superseded.** This section originally described a parallel `campaign_log.md` as well. That file is
+> gone: it duplicated the same exchanges with the state snapshot appended, the two drifted (29 machine
+> entries against 34 transcripts, with the index advertising ranges neither could answer), and every
+> hand-written section in it turned out to be either state or a copy of a transcript. The state snapshot
+> now lives in the transcript header, and `campaign_log.md` is archived in the campaign's `recycle_bin`.
 
 ### Proposed tools
 
@@ -372,8 +378,8 @@ against only the *last* segment is deliberate: leaving Mithraelis at turn 102 an
 
 ### Open questions
 
-- Should `grep_memories` also search `campaign_log.md` (the curated timeline) as a second source,
-  flagged by origin?
+- ~~Should `grep_memories` also search `campaign_log.md` as a second source?~~ **Resolved: the file was
+  retired.** Its unique content moved into the transcript header, so there is one corpus to search.
 - Do we want a rolling summary layer — periodic "chapter" summaries that get grepped instead of raw
   turns once a campaign exceeds a few hundred turns?
 
@@ -472,7 +478,7 @@ So the output shape must carry both a base and its conditional adjustments:
 …and the roll tools gain a `context` argument:
 
 ```js
-roll_save({ save: 'will', dc: 22, context: ['fear'] })
+roll_check({ kind: 'Will save', dc: 22, context: ['fear'] })
 ```
 
 This fits the existing boundary cleanly: **the model supplies the context** (judgment), **the code
@@ -935,7 +941,7 @@ stalled?" are all cheap typed questions currently either answered by the main mo
 | Which mode is this scene in? | `choice` (encounter / exploration / downtime) | cross-check `state.mode`; surface disagreement |
 | Is the player asking a rules question, declaring an action, or speaking out of character? | `choice` | routing — a rules question should hit `lookup_rule` before narration |
 | Does this turn leave something for the oracle to decide? | `noul` | enforces the persona's oracle discipline |
-| How hostile is this NPC right now? | `score` (0–4) | dialogue tone, feeding `get_monster_ai` |
+| How hostile is this NPC right now? | `score` (0–4) | dialogue tone, feeding `roll_monster_behavior` |
 | Has this scene stalled? | `score` | pacing; prompts the DM to escalate |
 
 ### Design rules
@@ -1226,7 +1232,9 @@ that genuinely exceeds the turn budget.
 ## Notes
 
 - The architecture these items extend is documented in
-  [`docs/dd35-preset-architecture.md`](/export/DownloadsSSD/Projects/Writing/TTRPG/D&D35/docs/dd35-preset-architecture.md).
+  [`dd35-preset-architecture.md`](dd35-preset-architecture.md) — design rationale and corpus
+  measurements; the plugin's contract and usage live in
+  [`plugins/dsh-dd35-preset/README.md`](../plugins/dsh-dd35-preset/README.md).
 - **FI-1 and FI-2 are the stated priorities. FI-1 is done; FI-2 is next.** FI-2 is `SPECCED` and can
   be picked up directly; its open questions are the only decisions outstanding.
 - **FI-9 is now the cheapest remaining P1** — it is coupled to FI-1 (the memory summary rides in its
@@ -1236,6 +1244,51 @@ that genuinely exceeds the turn budget.
   (`dd35-state` 11 → 10 tools, preset 44 → 43). Because capture runs on `turn/end`, an existing
   campaign needs no migration: old transcripts parse fine, and a missing `memory_index.json` is
   rebuilt from them on first read.
+- **Campaign prompt files shipped, and they partly pre-empt FI-9.** `prompt.js` now reads two optional
+  per-campaign files on every request: `dm_persona.md` as a system-prompt section directly after the
+  persona prefix, and `dm_notes.md` as a **runtime-context snapshot** — the same
+  `systemPrompt.context()` channel [FI-9](#fi-9--automatic-turn-start-state-injection) specced, so its
+  verification spike is worth reading before wiring live state through it. The notes block is not the
+  state block FI-9 wants: it carries what the DM chose to write, not a projection of `state.json`, and
+  nothing marks it with an "as of" turn. In the first campaign to use it the notes froze at *"Morning
+  (Flashback: 3 Years Ago)"* while play continued at night, and because the block is re-injected as
+  authoritative on every request it kept re-anchoring the DM to a scene it had already left. Treat an
+  unversioned injected snapshot as a freshness problem, not a formatting one.
+- **Turn capture now requires a client-minted `rpcId`.** Capture accepted any `role === 'user'` message
+  with `source.kind === 'user'`, which is exactly what `dsh-context-pressure` steered its
+  pre-compaction notice as. The notice lands between the player's message and the reply, so
+  `captureFrom` walked back and found it first: the turn record ends up with
+  `**Player:** Context is at 82% …`, and that turn's transcript is not the player's words at all. The
+  notice now declares `kind: 'context-pressure'` — source kinds are merge-extensible and consumers
+  fall through unknown ones (`dsh-llm/src/message.ts:103`); the thing that cannot be added is an event
+  *type*, per the poisoned-log section of [`global-plugins.md`](global-plugins.md) — and capture
+  requires the rpcId as a second line of defence. Logs written before the fix still need repair by
+  hand; nothing rewrites history.
+- **Branching a session truncates its history without saying so.** The `C7L - Flashback` rewind was
+  not compaction — neither session logged a single compaction event. The session had been forked from
+  its parent at turn 2 (`isSeeded: true`, an explicit `atSeq` at that turn's `turn/end`), so the five
+  turns after it do not exist in the child's log at all, and the head of that log is the parent turn
+  whose instruction was *"write the last two turns verbatim"*. The DM re-ran it, and its own leaked
+  reasoning block restates that instruction as the player's current request. Any "resume
+  mid-campaign" work has to give the model a signal that its history is a truncated prefix.
+- **The roll tools were unified.** One `dice.js` engine now backs every roll in the preset.
+  `roll_d20` was absorbed into `roll_dice`, which gained `modifier`, `dc`, `kind` and `note`; and
+  `roll_save` + `roll_skill` + `roll_opposed` collapsed into a single `roll_check`, where `opponent`
+  selects the opposed form. `roll_attack` is unchanged. `dd35-mechanics` 17 → 14 tools, and the preset
+  registers 43 in total — this recount also shows the `log_turn` entry above ("preset 44 → 43") as
+  stale, so treat module-local figures as the reliable ones. The persona's oracle table was corrected
+  in the same pass: it sent saving throws, skill checks **and** attack rolls to `roll_dice`, which
+  bypassed the two tools that apply their results to the sheets. `get_monster_ai` was renamed
+  `roll_monster_behavior`, and the table gained rows for `roll_check` and `roll_attack`.
+- **Dead weight, inventoried but deferred.** Collected while implementing the campaign prompt files and
+  the roll unification; deliberately not mixed into that work. Four of the fifteen tables parsed out of
+  [`tables.json`](../plugins/dsh-dd35-preset/tables.json) are read by no tool — `boon_table.csv`,
+  `bane_table.csv`, `dc_difficulty.csv`, `gm_moves.csv`. `renderActiveState()` in
+  [`state-store.js`](../plugins/dsh-dd35-preset/state-store.js) is exported and called from nowhere.
+  And `search_reference` matches file *names* only, which the built-in `grep` strictly dominates for
+  content search — that one is [FI-7](#fi-7--content-search-in-search_reference) seen from the other
+  side, so fixing it is already on this list. (`state.houserules` was vestigial too and was removed
+  with the notes work rather than deferred.)
 - **A lesson worth keeping.** Two of this backlog's earlier decisions rested on a wrong premise about
   DSH internals — that `systemPrompt.context()` writes into the system prompt at byte 0, and that
   runtime context has no source kind. Both were corrected only by reading the harness source while
