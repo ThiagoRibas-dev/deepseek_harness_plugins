@@ -76,10 +76,25 @@ host plane **cannot reach those sessions**. The guard has to be mounted inside
 the same group.
 
 In this profile that is the case for the `dd35` preset, which mounts the guarded
-files directly. The `web-app` bundle separately disables the host-plane
-`compaction-basic`, `tool-result-pruner` and `command-compact` rows, so this
-bundle's own `disabled` flags are redundant there — they are kept only so the
-bundle states its intent if another profile leaves those rows enabled.
+files directly, and for the shipped `standard` preset, which this bundle's own
+patch now overrides wholesale. The `web-app` bundle separately disables the
+host-plane `compaction-basic`, `tool-result-pruner` and `command-compact` rows,
+so this bundle's own `disabled` flags are redundant there — they are kept only so
+the bundle states its intent if another profile leaves those rows enabled.
+
+Overriding a shipped declaration is the only way in, because a patch replaces a
+row's `config` wholesale and a preset's plugin list is not a Loader row that
+`disabled` can reach. Two consequences:
+
+- The shipped plugin list is restated verbatim, so an upstream change to
+  `presets/standard.patch.yml` does not reach `standard` sessions until that copy
+  is refreshed. `tests/preset-override.test.js` pins the copy to the installed
+  file and fails on any drift outside the two swapped rows. `ptc` and `cordis`
+  are not overridden and stay unguarded.
+- The names inside a declaration must be absolute `file:///` URLs. The loader
+  anchors a relative plugin name only inside an `insert` list, so `./engine.js`
+  there resolves against the root entry list's base, fails to import, and
+  activates the preset as broken rather than merely unguarded.
 
 Before installing, establish which realm actually serves the sessions you care
 about:
@@ -116,6 +131,10 @@ plugin_manager action=list_plugins
 - `compaction-basic` → `enabled: false`
 - `tool-result-pruner` → `enabled: false`
 - `compaction-guard-engine` and `compaction-guard-pruner` → present, with config
+- `preset-standard` → active, with no diagnostic. A broken declaration still
+  appears on the roster but cannot compose a session, and its two compaction rows
+  are not Loader rows, so `list_plugins` will not show them. Check the row state,
+  not the rows inside it.
 
 If a `disabled` flag did not apply, move those two rows into the profile patch
 `$DSH_PROFILE_DIR/cordis.patch.yml`, which is applied after every bundle layer,
@@ -147,8 +166,9 @@ classes throw on unknown keys.
 
 Delete the two `disabled: true` rows and the `insert` block from
 `cordis.patch.yml`, or disable the two guard rows. Shipped behaviour returns on
-the next mount. This plugin writes nothing durable of its own, so rollback
-cannot corrupt a session.
+the next mount. The `preset-standard` override is independent: delete that block
+on its own to hand `standard` back to the shipped declaration. This plugin writes
+nothing durable of its own, so rollback cannot corrupt a session.
 
 ## Layout
 
@@ -161,9 +181,11 @@ tests/                  node --test tests/*.test.js
 cordis.patch.yml        disables the shipped pair, inserts the guards
 ```
 
-Row `name`s are relative paths, which the loader anchors beside the patch file.
-If that ever stops resolving, `@local/dsh-compaction-guard` and
-`@local/dsh-compaction-guard/pruner` are the equivalent package specifiers.
+The `name`s of the inserted rows at the end of `cordis.patch.yml` are relative
+paths, which the loader anchors beside the patch file. Names inside a preset
+declaration are not anchored and must be absolute `file:///` URLs, or the package
+specifiers `@local/dsh-compaction-guard` and
+`@local/dsh-compaction-guard/pruner`.
 
 ## Out of scope
 

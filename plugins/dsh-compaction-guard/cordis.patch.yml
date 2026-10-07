@@ -15,7 +15,9 @@
 # retention policy and no pricing. Removing the `disabled` flags below restores
 # the shipped behaviour exactly.
 #
-# Row names are relative paths, which the dialect anchors beside this patch file.
+# The inserted row names at the end of this file are relative paths, which the
+# dialect anchors beside this patch file. The names inside the preset
+# declaration below are absolute, for the reason given there.
 #
 # --- Coverage: presets mount their own compaction realm -----------------------
 #
@@ -107,8 +109,16 @@
         config:
           # Guarded replacement for the shipped engine: a degenerate summary
           # must not be committed. See this bundle's README.
+          #
+          # Absolute URLs, not the relative paths the inserted rows below use.
+          # The loader anchors a relative plugin name only inside an `insert`
+          # list (`anchorInsertedPluginNames`, `dsh-app-boot`), so a name inside
+          # a preset declaration is resolved against the root entry list's base,
+          # where `./engine.js` does not exist: the import would fail and the
+          # preset would activate as broken. `preset-dd35` names its children
+          # the same way for the same reason.
           - id: compaction-basic
-            name: './engine.js'
+            name: 'file:///export/DownloadsSSD/SHARED/harnesses/dsh/plugins/dsh-compaction-guard/engine.js'
             config:
               minSummaryChars: 400
               minRatio: 0
@@ -119,7 +129,7 @@
           # Guarded replacement for the shipped pruner: no mid-turn rewrite on
           # a provider that pins a delivered prefix.
           - id: tool-result-pruner
-            name: './pruner.js'
+            name: 'file:///export/DownloadsSSD/SHARED/harnesses/dsh/plugins/dsh-compaction-guard/pruner.js'
             config:
               thresholdChars: 8192
               headChars: 4096
