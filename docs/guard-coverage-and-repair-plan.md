@@ -68,13 +68,13 @@ Nothing offline proves that committing the notice makes Meridian accept the next
 
 ## Fix 5 — read before building the capture
 
-`lib/serialize.js:141-149` mentions hashing a continuation's prefix to the message list Meridian delivered. A prefix-signature mechanism was designed without reading it.
+**Read first.** `lib/serialize.js:139-154` already documents the prefix rule: a continuation sends the message history verbatim, because filtering a superseded `runtime-context` snapshot out of the prefix is itself what makes Meridian answer 409, and the newest snapshot is appended after the tool results where Meridian accepts it. There is no existing prefix hash and no existing request-body machinery, so the capture was written from scratch.
 
-**Step 5.1** — read `lib/serialize.js` lines ~120–200 and `lib/contract.js` for existing prefix or request-body machinery.
+**Implemented.** `lib/capture.js` writes one file per dispatch, named by dispatch time and request identity, containing the identity, the logical request hash, the session key, the model, the purpose, the continuation diagnosis, the enforced byte size, and the exact body that went on the wire. Config: `captureRequestBodies` (default `false`), `captureDir`, `captureMaxFiles` (default 50). Turning capture on without a directory throws at resolve time rather than silently doing nothing. The directory is pruned to the newest `captureMaxFiles`, and only names this module produces are eligible for deletion. A write failure warns and the turn continues.
 
-**Step 5.2** — then implement `captureRequestBodies` (boolean, default `false`) plus a directory config: write the serialized body per request to a bounded, opt-in location, one file per request id. Off by default; no redaction inside the file, and the path must be documented as containing full transcripts.
+**Tests.** `tests/capture.test.js` covers naming, the bounded directory, the foreign-file guard, the off case, and the never-throw rule. `tests/spent-batch.mjs` covers the wiring: capture off by default, the missing-directory refusal, and a refused dispatch leaving exactly one file whose body is what was sent.
 
-**Step 5.3** — only if the capture shows a rewrite worth diagnosing locally, add the prefix signature as a *diagnostic* (codes in the error text), never as a repair trigger. Meridian's 409 stays the repair trigger, because it is the confirmation.
+**Still open, deliberately.** Step 5.3 — a per-message prefix signature in the error text — stays unbuilt until a capture shows it would help. The capture is a diagnostic; Meridian's own 409 remains the only repair trigger. The answer to "should the connector talk to `agy` directly instead" needs captures from a session that fails after the repair is live, so it is part of Fix 4.
 
 ## Sequencing and risks
 

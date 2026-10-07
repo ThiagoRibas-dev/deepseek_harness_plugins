@@ -52,6 +52,9 @@ export const DEFAULT_MAX_CONCURRENT_TURNS = 3
 /** One outstanding stream read may not idle longer than Meridian's turn deadline. */
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
 
+/** Captures kept in `captureDir` before the oldest is deleted. */
+export const DEFAULT_CAPTURE_MAX_FILES = 50
+
 /** How long a `/health` reading and a `/v1/models` catalogue stay usable. */
 export const DEFAULT_HEALTH_TTL_MS = 60_000
 export const DEFAULT_CATALOGUE_TTL_MS = 300_000
@@ -165,6 +168,18 @@ export const Config = z.object({
    * so every later turn is refused as a spent continuation.
    */
   repairSpentBatch: z.boolean().default(true).volatile(),
+  /**
+   * Write the exact body of every dispatch to `captureDir`.
+   *
+   * Off by default. A capture is a complete transcript with nothing redacted,
+   * and its only purpose is diagnosing a refused continuation by diffing what
+   * was sent against what was sent before it.
+   */
+  captureRequestBodies: z.boolean().default(false).volatile(),
+  /** Where captures go. Required when `captureRequestBodies` is on. */
+  captureDir: z.string().default('').volatile(),
+  /** Captures kept before the oldest is deleted. */
+  captureMaxFiles: z.number().step(1).min(1).default(DEFAULT_CAPTURE_MAX_FILES).volatile(),
   retryPolicy: RetryPolicySchema.volatile(),
 })
 
@@ -262,6 +277,9 @@ export function resolveOptions(config, environment = process.env) {
     ignoredNoticeKinds: Object.freeze(resolveIgnoredNoticeKinds(plain.ignoredNoticeKinds)),
     keepLatestRuntimeContext: plain.keepLatestRuntimeContext ?? true,
     repairSpentBatch: plain.repairSpentBatch ?? true,
+    captureRequestBodies: plain.captureRequestBodies ?? false,
+    captureDir: resolveCaptureDir(plain),
+    captureMaxFiles: plain.captureMaxFiles ?? DEFAULT_CAPTURE_MAX_FILES,
     retryPolicy: resolveRetryPolicy(plain.retryPolicy ?? DEFAULT_RETRY_POLICY, 'meridian-antigravity retryPolicy'),
   })
 }
@@ -291,6 +309,19 @@ function requireNonEmpty(value, field) {
     throw new Error(`meridian-antigravity: ${field} must be a non-empty string`)
   }
   return value.trim()
+}
+
+/**
+ * Validate the capture directory. Turning capture on without one is a
+ * misconfiguration, not a silent no-op: the point of the flag is that the bytes
+ * were kept.
+ */
+function resolveCaptureDir(plain) {
+  const raw = typeof plain.captureDir === 'string' ? plain.captureDir.trim() : ''
+  if ((plain.captureRequestBodies ?? false) && raw.length === 0) {
+    throw new Error('meridian-antigravity: captureRequestBodies needs captureDir')
+  }
+  return raw
 }
 
 /**

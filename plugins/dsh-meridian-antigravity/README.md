@@ -96,6 +96,9 @@ The bundle patch mounts the route. Every field is optional and live-updatable.
 | `ignoredNoticeKinds` | `['model-selection', 'user-approval']` | Injected user-role notice kinds the provider never sees; `[]` disables the filter |
 | `keepLatestRuntimeContext` | `true` | Send only the newest `runtime-context` snapshot instead of every superseded one |
 | `repairSpentBatch` | `true` | Stand in for a reply the backend blocked after Meridian consumed the tool batch; without it the conversation ends on a tool result nothing can answer |
+| `captureRequestBodies` | `false` | Write the exact body of each dispatch to `captureDir`. Off by default: a capture is a complete transcript and nothing in it is redacted |
+| `captureDir` | — | Required when capture is on; turning capture on without it is refused at resolve time |
+| `captureMaxFiles` | 50 | Captures kept before the oldest is deleted. Only files this connector wrote are eligible |
 | `retryPolicy` | normal, 2 retries | Provider-owned policy, executed by `dsh-llm-retry` |
 
 ### Injected notices
@@ -120,6 +123,21 @@ A notice is kept when dropping it would leave the request ending on an assistant
 Meridian requires the final message to be a user turn and a turn can be driven by a notice alone —
 changing the approval policy or the model starts one. Set `ignoredNoticeKinds: []` together with
 `keepLatestRuntimeContext: false` to send everything, as earlier versions did.
+
+### Diagnosing a refused continuation
+
+Meridian answers 409 when a request no longer matches the turn it already delivered. The connector
+can only see what it is sending now, never the history Meridian kept, so on its own it cannot say
+which message moved. Setting `captureRequestBodies: true` and `captureDir` writes the exact body of
+each dispatch, before it is sent, one file per request and named by dispatch time. Diffing two
+consecutive files names the message that changed.
+
+The files are complete transcripts with tool results and nothing redacted, so this is off by default
+and the directory is session data. The directory is bounded by `captureMaxFiles`, and only files this
+connector wrote are ever deleted. A capture that cannot be written warns and the turn continues.
+
+Capture is a diagnostic, not a repair trigger: the repair path stays keyed on Meridian's own 409,
+because that verdict is the only authoritative statement that the prefix moved.
 
 ### Modalities
 
@@ -220,13 +238,14 @@ quota:
 - `tests/conformance.mjs` — 55 checks against a scriptable fake Meridian over loopback (health gate,
   catalogue, request shape, tool holding, recovery, identity, error policy, injected-notice filtering,
   base-URL handling, and the in-stream quota classification).
-- `tests/spent-batch.mjs` — 20 checks that a blocked generation or a spent tool batch cannot kill a
+- `tests/spent-batch.mjs` — 22 checks that a blocked generation or a spent tool batch cannot kill a
   conversation: `CONTENT_FILTERED` instead of a retryable fault on both the streaming and the HTTP 502
   path, in a JSON envelope and in a bare body; `MERIDIAN_BATCH_SPENT` for any recoverable failure on a
   continuation Meridian answered (a cut stream, an idle stream stall, a non-2xx) and `TRANSPORT`/`TIMEOUT`
   kept for one that never reached the service; the repair on Meridian's spent-batch 409, on the
-  abort-then-repair path, and directly on a blocked continuation; that a reply the filter cut late survives
-  with the notice in a second block; and that a genuinely rewritten transcript is never papered over.
+  abort-then-repair path, on a blocked continuation, and on a refused continuation; that a reply the filter
+  cut late survives with the notice in a second block; that a conflict with no continuation is still
+  reported; and that the opt-in capture writes the dispatched body and nothing when it is off.
 - `tests/client.mjs` — the module-loader contract, both slot registrations, and the card's first render
   under a minimal React shim (every field, the inactive and keyless states, the overridden marker, and
   the unwritable namespace).
@@ -243,8 +262,10 @@ rig:
 - `tests/quota-source.test.js` (9) — the pooled reader: coalescing, the refresh floor, failure states.
 - `tests/quota-route.test.js` (6) — route auth, method handling, and the not-settled answer.
 - `tests/compaction-ids.test.js` (10) — tool-id rewriting for compaction calls.
-- `tests/continuation.test.js` (9) — the continuation diagnosis.
-- `tests/failure.test.js` (11) — the failure-text classifiers and both notice texts, against verbatim provider strings and
+- `tests/continuation.test.js` (12) — the continuation diagnosis, and the shapes the repair gate reaches.
+- `tests/capture.test.js` (5) — capture naming, the bounded directory, the never-throw rule, and that a
+  capture that is off writes nothing.
+- `tests/failure.test.js` (13) — the failure-text classifiers and all three notice texts, against verbatim provider strings and
   verbatim `ag_state` rows from Meridian's own ledger.
 
 The runner builds a throwaway module-resolution rig, because a profile-installed plugin resolves

@@ -503,6 +503,49 @@ await check('a blocked continuation is not repaired when the repair is off', asy
   )
 })
 
+await check('capture is off by default and writes the dispatched body when on', async () => {
+  const { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { resolveOptions } = await import('../lib/config.js')
+
+  const dir = mkdtempSync(join(tmpdir(), 'ma-capture-'))
+  try {
+    // Off by default: a fresh image must not leave transcripts on disk.
+    assert.equal(deps().connection.captureRequestBodies, false)
+    // On without a directory is an operator error, not a silent no-op.
+    assert.throws(
+      () => resolveOptions({ baseURL: BASE, captureRequestBodies: true }),
+      /captureRequestBodies needs captureDir/,
+    )
+
+    // A refusal is exactly the case the capture exists for, and it proves the
+    // body is written before dispatch rather than after a good answer. The
+    // repair is off here so the refusal surfaces as the error it is.
+    state.mode = 'refuse'
+    state.refuseDetail = REWRITE_DETAIL
+    await expectFailure(
+      collect(runTurn(
+        deps({ captureRequestBodies: true, captureDir: dir, repairSpentBatch: false }),
+        options(continuation()),
+      )),
+      'MERIDIAN_CONTINUATION_CONFLICT',
+    )
+    state.mode = 'cut'
+    const files = readdirSync(dir)
+    assert.equal(files.length, 1, 'one dispatch writes one capture')
+    const captured = JSON.parse(readFileSync(join(dir, files[0]), 'utf8'))
+    assert.equal(captured.session, 'session-test')
+    assert.equal(captured.model, 'gemini-3.8-flash-low')
+    assert.equal(captured.continuation.results, 1)
+    assert.equal(captured.body.stream, true, 'the capture is what went on the wire')
+    assert.equal(captured.body.messages.some(message => message.role === 'user'), true)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    assert.equal(existsSync(dir), false)
+  }
+})
+
 server.close()
 
 console.log(`\n${passed} passed, ${failures.length} failed`)

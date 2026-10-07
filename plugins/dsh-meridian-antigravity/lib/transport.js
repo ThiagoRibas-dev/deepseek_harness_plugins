@@ -16,6 +16,7 @@ import {
   blockedReplyNotice, isSpentBatch, rewrittenContinuationNotice, spentBatchNotice,
 } from './failure.js'
 import { enforceRequestBudget, serializeRequest } from './serialize.js'
+import { writeCapture } from './capture.js'
 import { continuationHint } from './continuation.js'
 import { logicalRequestHash } from './idempotency.js'
 import { MeridianTranslator, parseSse } from './stream.js'
@@ -74,6 +75,20 @@ export async function* runTurn(dependencies, options) {
     `meridian-antigravity: ${identity.reused ? 'reusing' : 'minted'} request identity ${identity.id}`
     + ` for ${options.model} (${size} bytes)`,
   )
+  // Opt-in, and written before dispatch so a request that is refused outright is
+  // still on disk. A refused continuation is reported as a mismatch against a
+  // history this process cannot see, so what was sent is the evidence.
+  writeCapture(connection, {
+    time: Date.now(),
+    identity: identity.id,
+    logicalRequestHash: hash,
+    session: scope,
+    model: options.model,
+    purpose: options.purpose ?? null,
+    continuation: continuation ?? null,
+    bytes: size,
+    body: streamingBody,
+  }, logger)
 
   const release = await gate.acquire(signal)
   let succeeded = false
