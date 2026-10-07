@@ -30,7 +30,10 @@ Verified against Meridian **1.76.1** with official `agy` **1.2.7**, client tool 
 | Do not mint a new id to escape the guard | A failed turn keeps its identity, so the harness retry presents the identity Meridian already recorded. |
 | Recover by replay, not by regenerating | A stream cut before `message_stop` triggers exactly one `x-meridian-replay-only: true` re-ask under the same identity, which never starts a model. Only the missing text suffix and the withheld tools are emitted, and a saved answer that does not extend what was already shown is refused. |
 | A replayed answer is not new usage | `x-meridian-response-replayed: true` suppresses the usage chunk, so a replay is never counted twice. |
-| Do not retry generation blindly | The provider retry policy retries only `TRANSPORT`, `TIMEOUT`, `SERVER`, `RATE_LIMIT`, `EMPTY_RESPONSE` and `MERIDIAN_PENDING_REPLAYABLE`, at most twice. `INVALID_REQUEST`, `AUTH`, `QUOTA`, `MERIDIAN_CONTINUATION_CONFLICT`, `MERIDIAN_UNCERTAIN_OUTCOME`, `MERIDIAN_NO_SNAPSHOT`, `MERIDIAN_UNSUPPORTED_SERVICE` and `UNKNOWN_MODEL` are permanent. |
+| Do not retry generation blindly | The provider retry policy retries only `TRANSPORT`, `TIMEOUT`, `SERVER`, `MERIDIAN_AGENT_INTERRUPTED`, `RATE_LIMIT`, `EMPTY_RESPONSE` and `MERIDIAN_PENDING_REPLAYABLE`, at most twice. `INVALID_REQUEST`, `AUTH`, `QUOTA`, `MERIDIAN_CONTINUATION_CONFLICT`, `MERIDIAN_UNCERTAIN_OUTCOME`, `MERIDIAN_NO_SNAPSHOT`, `MERIDIAN_UNSUPPORTED_SERVICE`, `UNKNOWN_MODEL`, `CONTENT_FILTERED` and `MERIDIAN_BATCH_SPENT` are permanent. |
+| A retry must not re-present a spent batch | `TRANSPORT` is retryable because no tool block is delivered before `message_stop` — but Meridian consumes an accepted tool result on the **request** side, so a retry can re-present a batch it has already released and be refused permanently. Any recoverable failure on a continuation **Meridian answered** — a cut stream, a stream stall, or a non-2xx — is therefore reclassified `MERIDIAN_BATCH_SPENT`; one that never reached the service keeps its retryable code, because nothing can have been consumed. A blocked generation is `CONTENT_FILTERED` on both the streaming and the HTTP path. Neither is retried. |
+| A stranded batch is repaired, not only reported | When a reply never arrives, the transcript is left ending on a tool result, and every later request presents a batch Meridian has already consumed, so it is refused again. Two failures cause this and both are answered by **committing the assistant turn**: Meridian's `"already consumed"` 409, and a `CONTENT_FILTERED` failure on a continuation. The second is needed because a blocked generation is not retryable, so nothing re-sends the request and the 409 never appears. If the model had already streamed part of an answer, that text is kept and the notice is added as a second block saying the text above may be incomplete. A block on a turn with no continuation is left as an error, because no tool result is left unanswered and the request can simply be sent again. |
+| One condition, one legible code | Meridian's text, not its status, names two different 502s. `connection to the agent was interrupted` is `MERIDIAN_AGENT_INTERRUPTED` — the connector's most frequent live failure, split out of `SERVER` so it can be counted — and the content-filter policy text is `CONTENT_FILTERED`. Both are read from the body by `lib/failure.js` before the status is considered, whether it arrives in Meridian's JSON envelope or passed through verbatim by a gateway. |
 | Four live processes, no queue, 429 when full | A local FIFO gate (`maxConcurrentTurns`, default 3) leaves headroom for Meridian's own probes and turns pool exhaustion into a bounded wait instead of a lost warm process. |
 | 8 MiB request cap | Measured before the bytes leave the harness. An image-bound overflow throws `IMAGE_OFFLOAD_REQUIRED` with the number of oldest occurrences to drop, which `dsh-compaction-image-offload` knows how to repair; a request with no image fails as `INVALID_REQUEST`. |
 | Images are inlined, `image/jpg` is never produced | Every image is read through `ctx.attachments.readImage` and sent as canonical base64 with a media type from the harness union (`png`/`jpeg`/`webp`/`gif`). |
@@ -51,7 +54,9 @@ Meridian returns 409 for several unrelated conditions, so the provider message d
 | 422 | `MERIDIAN_STOP_IN_STRUCTURED_OUTPUT` | no |
 | 429 | `RATE_LIMIT`, or `QUOTA` when the body names quota | `RATE_LIMIT` only, honoring `Retry-After` |
 | 502 / 503 | `SERVER` | yes, honoring `Retry-After` |
-| 504 | `TIMEOUT` | yes |
+| 502 — body says `"the connection to the agent was interrupted…"` | `MERIDIAN_AGENT_INTERRUPTED` | yes — the same retryable condition as `SERVER`, named separately so it can be counted |
+| 502 — body carries the content-filter policy text | `CONTENT_FILTERED` | no — the identical request is blocked identically; on a continuation the connector commits the assistant turn instead, keeping any reply the filter cut short |
+| 504 | `TIMEOUT` | yes; on a continuation it becomes `MERIDIAN_BATCH_SPENT` |
 
 ## Configuration
 
@@ -89,6 +94,7 @@ The bundle patch mounts the route. Every field is optional and live-updatable.
 | `stripToolsForSessionTitle` | `true` | Helper title turns advertise no tools |
 | `ignoredNoticeKinds` | `['model-selection', 'user-approval']` | Injected user-role notice kinds the provider never sees; `[]` disables the filter |
 | `keepLatestRuntimeContext` | `true` | Send only the newest `runtime-context` snapshot instead of every superseded one |
+| `repairSpentBatch` | `true` | Stand in for a reply the backend blocked after Meridian consumed the tool batch; without it the conversation ends on a tool result nothing can answer |
 | `retryPolicy` | normal, 2 retries | Provider-owned policy, executed by `dsh-llm-retry` |
 
 ### Injected notices
@@ -207,18 +213,27 @@ cannot reach them. The strip is a report, not a gate.
 
 ## Tests
 
-`./tests/run.sh` runs three suites through a module-resolution rig — no live service and no subscription
+`./tests/run.sh` runs five suites through a module-resolution rig — no live service and no subscription
 quota:
 
 - `tests/conformance.mjs` — 55 checks against a scriptable fake Meridian over loopback (health gate,
   catalogue, request shape, tool holding, recovery, identity, error policy, injected-notice filtering,
   base-URL handling, and the in-stream quota classification).
+- `tests/spent-batch.mjs` — 20 checks that a blocked generation or a spent tool batch cannot kill a
+  conversation: `CONTENT_FILTERED` instead of a retryable fault on both the streaming and the HTTP 502
+  path, in a JSON envelope and in a bare body; `MERIDIAN_BATCH_SPENT` for any recoverable failure on a
+  continuation Meridian answered (a cut stream, an idle stream stall, a non-2xx) and `TRANSPORT`/`TIMEOUT`
+  kept for one that never reached the service; the repair on Meridian's spent-batch 409, on the
+  abort-then-repair path, and directly on a blocked continuation; that a reply the filter cut late survives
+  with the notice in a second block; and that a genuinely rewritten transcript is never papered over.
 - `tests/client.mjs` — the module-loader contract, both slot registrations, and the card's first render
   under a minimal React shim (every field, the inactive and keyless states, the overridden marker, and
   the unwritable namespace).
 - `tests/serialize-compaction.mjs` — that a compaction call reaches the wire with re-derived, paired
   ids and no tools, that a conversation call is byte-identical to before, and that serialization is
   stable across attempts.
+- `tests/serialize-notices.mjs` — that the injected-notice filter keeps the turn's last user message and
+  drops only the configured kinds, in order.
 
 The remaining suites import nothing but Node built-ins, so they run standalone with `node --test` and no
 rig:
@@ -228,6 +243,8 @@ rig:
 - `tests/quota-route.test.js` (6) — route auth, method handling, and the not-settled answer.
 - `tests/compaction-ids.test.js` (10) — tool-id rewriting for compaction calls.
 - `tests/continuation.test.js` (9) — the continuation diagnosis.
+- `tests/failure.test.js` (11) — the failure-text classifiers and both notice texts, against verbatim provider strings and
+  verbatim `ag_state` rows from Meridian's own ledger.
 
 The runner builds a throwaway module-resolution rig, because a profile-installed plugin resolves
 `@deepseek-ai/*` through the harness loader, which plain Node does not provide.
@@ -238,6 +255,10 @@ $ ./tests/run.sh
 10 passed, 0 failed
 
 serialize-compaction: ok
+
+serialize-notices: ok
+
+20 passed, 0 failed
 
 55 passed, 0 failed
 ```
@@ -265,6 +286,39 @@ serialize-compaction: ok
   tool-result pruner (`@deepseek-ai/dsh-compaction-tool-result-pruner`) in its composition so the delivered
   prefix stays stable; context pressure is then handled by summary compaction, which rewrites a whole region
   at once and is subject to the same rule.
+- **A generation blocked after its tool results were accepted left the batch stranded, and the connector
+  now repairs it.** Antigravity's content filter can refuse the *output* of a turn whose tool results
+  Meridian has already consumed, because consumption happens on the request side. The transcript is then left
+  ending on a tool result, and every later turn presents a batch Meridian already has, so it is refused the
+  same way. This was observed live twice; the second occurrence produced the current design. Four changes
+  apply. The block is classified **`CONTENT_FILTERED`** instead of the retryable `TRANSPORT`, so the harness
+  reports the content filter rather than a transcript conflict, and the same text arriving as Meridian's
+  **HTTP 502** is classified the same way, because the ledger showed the block arrives on that path too. A
+  recoverable failure on a continuation Meridian answered — a cut stream, a stream stall, or any non-2xx — is
+  classified **`MERIDIAN_BATCH_SPENT`**, because re-sending would present a batch it has already released;
+  only a failure that never reached Meridian keeps a retryable code. With `repairSpentBatch` on (the
+  default), the connector commits the assistant turn, which is what lets the next request proceed. With the
+  option off, the session stays stuck at that turn until it is forked from before it.
+  The repair no longer depends on Meridian's 409. Making the block non-retryable removed the retry that used
+  to produce `"Antigravity tool result was already consumed"`, which was the repair's only trigger, so a
+  repair keyed on that message alone stopped running in the case it was written for. It now also fires on a
+  `CONTENT_FILTERED` failure that has a continuation. Committing the turn is what Meridian's own error
+  message asks for.
+  A blocked turn can arrive late. The live case ran for 62 s, streamed a complete 1,250-character reply, and
+  then failed at the finish. That text is kept: it is closed as its own block and the notice follows in a
+  second block, so a reply cut mid-word does not run into the notice. No usage is reported, because the only
+  figure such a stream carried is the partial one from `message_start`. A block on a turn with no
+  continuation is still reported rather than repaired, because no tool result is left unanswered.
+  The notice arrives as an ordinary assistant message and its turn completes, so a turn recorder has to
+  distinguish it from narration: `dsh-dd35-preset` treats a turn carrying a notice as non-canon. It matches
+  [`NOTICE_PREFIX`](lib/failure.js) at the start of any line, because a salvaged turn carries the model's
+  text and the notice in separate blocks. Changing that string means changing its
+  `CONNECTOR_NOTICE_PREFIXES` list as well.
+- **The repair's trigger cannot be audited from Meridian's ledger.** `"already consumed"` is a real
+  Meridian 409 (`invalid_request_error`), but it appears in `ag_state` **never** — Meridian refuses a spent
+  continuation before it writes the `exchanges` row, so that table only ever holds 200/499/502/429/504. A
+  repair that silently stopped firing would therefore leave no trace on Meridian's side either; the harness
+  transcript is the only place to look.
 - **Attachments (PDF, audio, video) need an upstream seam change, not an adapter change.** The
   contract describes `document`, `audio` and `video` blocks, but `@deepseek-ai/dsh-llm` projects every
   durable file to handle text *before* any adapter runs, unconditionally:

@@ -92,12 +92,21 @@ export const DEFAULT_IGNORED_NOTICE_KINDS = Object.freeze(['model-selection', 'u
  * it only after it has already released the process waiting for the tool result
  * and still holds the completed history, so the retry replays that history
  * instead of running a tool a second time.
+ *
+ * `MERIDIAN_AGENT_INTERRUPTED` splits the most frequent 5xx out of `SERVER` so it
+ * can be counted and reported on its own; it is retryable for the same reason
+ * `SERVER` is.
  */
 export const DEFAULT_RETRY_POLICY = Object.freeze({
   mode: 'normal',
   maxRetries: 2,
   retryableCodes: Object.freeze([
     'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT', 'EMPTY_RESPONSE', 'MERIDIAN_PENDING_REPLAYABLE',
+    // Not a new policy, only a new name for the most frequent 5xx: Meridian's
+    // subscriber to the agent dropping mid-request. It stays retryable exactly
+    // as the `SERVER` it used to be, and the transport reclassifies it on a
+    // continuation before the policy ever sees it.
+    'MERIDIAN_AGENT_INTERRUPTED',
   ]),
   backoff: Object.freeze({ initialDelayMs: 1_000, maxDelayMs: 15_000, jitterRatio: 0.1 }),
 })
@@ -150,6 +159,12 @@ export const Config = z.object({
   ignoredNoticeKinds: z.array(z.string()).default([...DEFAULT_IGNORED_NOTICE_KINDS]).volatile(),
   /** Send only the newest `runtime-context` snapshot instead of every superseded one. */
   keepLatestRuntimeContext: z.boolean().default(true).volatile(),
+  /**
+   * Stand in for a reply the backend blocked after Meridian consumed the tool
+   * batch. Without it the conversation ends on a tool result nothing can answer,
+   * so every later turn is refused as a spent continuation.
+   */
+  repairSpentBatch: z.boolean().default(true).volatile(),
   retryPolicy: RetryPolicySchema.volatile(),
 })
 
@@ -246,6 +261,7 @@ export function resolveOptions(config, environment = process.env) {
     stripToolsForSessionTitle: plain.stripToolsForSessionTitle ?? true,
     ignoredNoticeKinds: Object.freeze(resolveIgnoredNoticeKinds(plain.ignoredNoticeKinds)),
     keepLatestRuntimeContext: plain.keepLatestRuntimeContext ?? true,
+    repairSpentBatch: plain.repairSpentBatch ?? true,
     retryPolicy: resolveRetryPolicy(plain.retryPolicy ?? DEFAULT_RETRY_POLICY, 'meridian-antigravity retryPolicy'),
   })
 }

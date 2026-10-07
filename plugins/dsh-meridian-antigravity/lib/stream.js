@@ -207,6 +207,49 @@ export class MeridianTranslator {
     return this.#flush()
   }
 
+  /**
+   * Close a response the backend cut short, appending a connector note.
+   *
+   * A blocked generation has no saved answer to recover, and a withheld tool must
+   * not be emitted: the model asked for it, but it was never delivered, so it must
+   * not run. Ending the assistant turn here is what leaves the transcript in a
+   * state the next request can continue from, instead of a spent continuation.
+   *
+   * Text already shown is closed as its own block rather than discarded, since on
+   * a blocked turn it is often most of an answer. The note opens a fresh block at
+   * the next index, so a reply cut mid-word does not run into it.
+   *
+   * No usage is reported. The only usage this stream carried is the partial figure
+   * from `message_start`; the terminal totals arrive in `message_delta`, which a
+   * cut stream never reaches.
+   *
+   * @param text - the note to append, authored by the connector.
+   * @returns the chunks that close the turn with a normal stop.
+   */
+  closeWith(text) {
+    const chunks = []
+    if (this.#openTextIndex !== undefined) {
+      const open = this.#openTextIndex
+      chunks.push({ type: 'block-end', index: open, block: { type: 'text', text: this.#streamed.get(open) ?? '' } })
+      this.#openTextIndex = undefined
+    }
+    const index = (this.#lastShownIndex ?? -1) + 1
+    this.#streamed.set(index, text)
+    this.#lastShownIndex = index
+    this.#contentSeen = true
+    chunks.push({ type: 'block-start', index, blockType: 'text' })
+    chunks.push({ type: 'text-delta', index, text })
+    chunks.push({ type: 'block-end', index, block: { type: 'text', text } })
+    // Held blocks are dropped on purpose: emitting one would execute a tool for a
+    // turn whose reply can never be completed.
+    this.#held = []
+    this.#heldByIndex = new Map()
+    this.#holding = false
+    this.#finished = true
+    chunks.push({ type: 'finish', reason: { kind: 'stop' } })
+    return chunks
+  }
+
   /** Emit every held block in stream order, then usage and the terminal finish. */
   #flush() {
     const chunks = []

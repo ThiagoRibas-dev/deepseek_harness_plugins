@@ -11,7 +11,8 @@
  */
 
 import { LlmError, attributionHeaders } from '@deepseek-ai/dsh-llm'
-import { meridianErrorFromText, streamInterrupted } from './errors.js'
+import { batchSpent, meridianErrorFromText, streamInterrupted } from './errors.js'
+import { blockedReplyNotice, isSpentBatch, spentBatchNotice } from './failure.js'
 import { enforceRequestBudget, serializeRequest } from './serialize.js'
 import { continuationHint } from './continuation.js'
 import { logicalRequestHash } from './idempotency.js'
@@ -74,12 +75,25 @@ export async function* runTurn(dependencies, options) {
 
   const release = await gate.acquire(signal)
   let succeeded = false
+  // Whether a response arrived at all. Any response, 2xx or error, means Meridian
+  // received the request, and Meridian consumes an accepted tool batch on the
+  // request side, so a failure after this point may already have spent the batch.
+  // A connect failure means nothing reached Meridian and a retry is safe. The flag
+  // is set where the response arrives rather than inferred from a status code
+  // later, so the two cases cannot be confused.
+  let reachedMeridian = false
   const idle = idleWatch(signal, connection.streamIdleTimeoutMs)
   try {
     const key = await resolveApiKey(connection)
     const translator = new MeridianTranslator()
     try {
-      const response = await dispatch(connection, streamingBody, headers, key, idle, continuation)
+      const response = await sendMessages(connection, streamingBody, headers, key, idle)
+      reachedMeridian = true
+      if (!response.ok) {
+        // Meridian answered, so this is its verdict rather than a lost request.
+        const text = await response.text()
+        throw withContinuationHint(meridianErrorFromText(response.status, response.headers, text), continuation)
+      }
       translator.markReplayed(response.headers.get('x-meridian-response-replayed') === 'true')
       const effective = response.headers.get('x-meridian-effective-model')
       if (effective !== null && effective !== options.model) {
@@ -102,15 +116,62 @@ export async function* runTurn(dependencies, options) {
       // transport itself — an undici `terminated`, a reset, a decode fault — and
       // is a cut stream, not a harness error to surface raw.
       const failure = error instanceof LlmError ? error : streamInterrupted(errorMessage(error), error)
-      if (idle.expired()) throw idleFailure(failure)
+      if (idle.expired()) throw spentIfContinuation(idleFailure(failure), continuation, reachedMeridian)
       if (signal?.aborted === true || isAbort(error)) {
+        // A cancelled turn is the operator's decision, not a Meridian verdict, so
+        // it is reported as such. If it spent the batch, the repair on the next
+        // request is what heals it — nothing may be committed on an abort.
         throw new LlmError('Meridian Antigravity turn aborted', 'ABORTED', { cause: error })
       }
+      // Meridian consumed the batch and the reply never arrived, so the assistant
+      // turn this continuation owes does not exist. Committing a notice in its
+      // place leaves the transcript ending on an assistant message, which is what
+      // the next request needs; without it every later request re-presents a batch
+      // Meridian has already consumed and is refused again.
+      //
+      // Two failures end here. Meridian reports one of them directly, as the
+      // "already consumed" 409. The other is a blocked generation, which Meridian
+      // does not report as a spent batch at all: because a blocked generation is
+      // not retryable, nothing re-sends the request, so the 409 never appears and
+      // this branch has to detect the block itself. A block on a turn with no
+      // continuation is not repaired, because no tool result is left unanswered
+      // and the user can send the request again.
+      const spent = isSpentBatch(failure.failure?.message ?? failure.message)
+      const blocked = failure.failure?.code === 'CONTENT_FILTERED' && continuation !== undefined
+      if (connection.repairSpentBatch === true && (spent || blocked)) {
+        // A blocked turn can arrive late, after the model has streamed most of an
+        // answer. That text is kept and the notice says so, rather than being
+        // discarded along with the failed turn.
+        const shown = translator.state.streamedText
+        logger?.warn?.(
+          'meridian-antigravity: Meridian consumed this turn\'s tool batch for a reply that was never'
+          + ` completed (${shown.length > 0 ? 'a partial reply was delivered' : 'no reply was produced'});`
+          + ' committing a notice so the conversation can continue',
+        )
+        const notice = shown.length > 0
+          ? blockedReplyNotice(continuation?.results)
+          : spentBatchNotice(continuation?.results)
+        for (const chunk of translator.closeWith(notice)) yield chunk
+        succeeded = true
+        ledger.settle(hash, true)
+        return
+      }
+      // Everything below deliberately keeps its own code rather than becoming
+      // `MERIDIAN_BATCH_SPENT`, even on a continuation. These are failures that
+      // either cannot be retried anyway (`HTTP_499` "Request cancelled", `AUTH`,
+      // `INVALID_REQUEST`), or that say something more specific and more useful
+      // than "the batch is gone" (`CONTENT_FILTERED`, the transcript conflict).
+      // The guard exists to stop a *retry* re-presenting a spent batch; where
+      // nothing would be retried there is nothing for it to protect.
       if (!isRecoverable(failure)) throw failure
       // The stream was cut short. Recover the saved answer under the same
       // identity rather than starting a second generation.
-      for (const chunk of await recover({ connection, contract, translator, body, headers, key, signal, logger, failure })) {
-        yield chunk
+      try {
+        for (const chunk of await recover({ connection, contract, translator, body, headers, key, signal, logger, failure })) {
+          yield chunk
+        }
+      } catch (recoveryFailure) {
+        throw spentIfContinuation(recoveryFailure, continuation, reachedMeridian)
       }
       succeeded = true
       ledger.settle(hash, true)
@@ -173,11 +234,20 @@ async function recover({ connection, contract, translator, body, headers, key, s
   return translator.resume(message)
 }
 
-/** POST the streaming turn and classify a non-2xx without retrying generation. */
-async function dispatch(connection, body, headers, key, idle, diagnosis) {
-  let response
+/**
+ * POST the streaming turn and hand back Meridian's response whatever its status.
+ *
+ * This is the only place a connection failure becomes an error, and it is the
+ * boundary `spentIfContinuation` depends on. Throwing here means no response
+ * arrived, so Meridian never saw the request and a retry cannot re-present a
+ * consumed batch. A non-2xx is an answer from Meridian and means the opposite, so
+ * it is returned for the caller to classify.
+ *
+ * @returns the fetch response, with `ok` still to be checked.
+ */
+async function sendMessages(connection, body, headers, key, idle) {
   try {
-    response = await fetch(`${connection.baseURL}/v1/messages`, {
+    return await fetch(`${connection.baseURL}/v1/messages`, {
       method: 'POST',
       signal: idle.signal,
       redirect: 'error',
@@ -195,9 +265,6 @@ async function dispatch(connection, body, headers, key, idle, diagnosis) {
       { cause: error },
     )
   }
-  if (response.ok) return response
-  const text = await response.text()
-  throw withContinuationHint(meridianErrorFromText(response.status, response.headers, text), diagnosis)
 }
 
 /**
@@ -229,7 +296,35 @@ function withContinuationHint(error, diagnosis) {
 /** Failures a same-identity re-ask can plausibly resolve. */
 function isRecoverable(error) {
   const code = error?.failure?.code
-  return code === 'TRANSPORT' || code === 'TIMEOUT' || code === 'SERVER'
+  return code === 'TRANSPORT' || code === 'TIMEOUT' || code === 'SERVER' || code === 'MERIDIAN_AGENT_INTERRUPTED'
+}
+
+/**
+ * Reclassify a cut stream that may have spent the batch it was continuing.
+ *
+ * A cut stream is retryable in general because no tool block is delivered before
+ * `message_stop`. That covers tool execution on the response side, not the
+ * request side: Meridian consumes accepted tool results as it receives them, so
+ * re-sending the request presents a batch it has already released and is refused
+ * with a continuation conflict.
+ *
+ * `reachedMeridian` separates the two cases. If no response arrived, nothing
+ * reached Meridian, so `TRANSPORT` stays retryable and the bounded policy may
+ * re-send. If a response did arrive, the batch may already be consumed, and a
+ * re-send can only fail again. The cost of the two mistakes is not equal: an
+ * unnecessary re-send leaves the session stuck, while a suppressed one reports a
+ * single error. So a failure on a continuation is treated as possibly spent
+ * unless the connector knows nothing reached Meridian.
+ *
+ * @param failure - the failure being surfaced.
+ * @param continuation - the continuation diagnosis, `undefined` for an ordinary turn.
+ * @param reachedMeridian - whether Meridian answered this request at all.
+ * @returns the replacement failure, or the original when a retry is still safe.
+ */
+function spentIfContinuation(failure, continuation, reachedMeridian) {
+  if (!reachedMeridian || continuation === undefined) return failure
+  if (!isRecoverable(failure)) return failure
+  return batchSpent(failure)
 }
 
 /** Preserve an already-classified recoverable failure instead of flattening it. */

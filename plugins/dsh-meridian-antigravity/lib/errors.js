@@ -11,6 +11,7 @@
  */
 
 import { LlmError, ProviderRequestId } from '@deepseek-ai/dsh-llm'
+import { isAgentInterrupted, isContentFiltered } from './failure.js'
 import { parseResetWindow, quotaFailure } from './quota.js'
 
 /** HTTP status is not enough: these codes come from the response body. */
@@ -73,6 +74,28 @@ export function meridianErrorDetail(raw) {
 }
 
 /**
+ * The one `CONTENT_FILTERED` failure, shared by both transports.
+ *
+ * A blocked generation reaches the harness two ways: as a stream cut carrying
+ * Google's policy text, and as an HTTP 502 carrying the same text. The two paths
+ * produce the same message and the same classification, so the message is built
+ * here once.
+ *
+ * @param detail - the provider's own text.
+ * @param facts - failure facts to carry, when there are any.
+ * @returns the non-retryable classification.
+ */
+function contentFiltered(detail, facts) {
+  return new LlmError(
+    'Meridian Antigravity produced no reply: the backend blocked the model\'s output with its content'
+    + ' filter. The turn cannot be retried as-is, because the same request is blocked the same way.'
+    + ` (${detail})`,
+    'CONTENT_FILTERED',
+    facts,
+  )
+}
+
+/**
  * Classify one non-2xx Meridian response into a provider-neutral `LlmError`.
  *
  * Retryability is expressed by the code plus the adapter's retry policy, not by
@@ -82,6 +105,11 @@ export function meridianErrorDetail(raw) {
  * retryable set. `MERIDIAN_PENDING_REPLAYABLE` is the single 409 the default
  * policy retries, because Meridian has already released the waiting process for
  * that condition and keeps the completed history a retry replays.
+ *
+ * The status is not always the whole answer. Two Meridian conditions arrive as a
+ * 502 whose body says what actually happened, and classifying them by status
+ * alone would both hide them and, for the content filter, retry a turn that can
+ * only be refused again.
  *
  * @param raw - decoded JSON body, when it parsed.
  * @param status - HTTP status.
@@ -167,6 +195,18 @@ export function meridianError(raw, status, headers) {
         : { providerRetryAfterMs: resetAfter },
     })
   }
+  // Read the body before the status, for the two 502s whose text is the only
+  // thing that says what happened. A blocked generation must not be retried, and
+  // the same block arrives here as a 502 on the very request Meridian consumed a
+  // tool batch for — classifying it `SERVER` reopened the deadlock the in-stream
+  // fix had closed. The provider message is used as the detail because it is the
+  // same sentence the streaming path carries.
+  if (isContentFiltered(detail)) {
+    return contentFiltered(providerMessage.length > 0 ? providerMessage : detail, facts)
+  }
+  if (isAgentInterrupted(detail)) {
+    return new LlmError(message, 'MERIDIAN_AGENT_INTERRUPTED', facts)
+  }
   if (status === 504) return new LlmError(message, 'TIMEOUT', facts)
   if (status >= 500) return new LlmError(message, 'SERVER', facts)
   if (CONTEXT_HINTS.test(detail)) return new LlmError(message, 'CONTEXT_WINDOW_EXCEEDED', facts)
@@ -185,6 +225,18 @@ export function meridianError(raw, status, headers) {
 
 /**
  * Build a failure for a response that is not Meridian's documented envelope.
+ *
+ * A gateway that is not Meridian still returns an authoritative status, and the
+ * text it carries may be Meridian's own wording passed through verbatim. That
+ * matters for exactly the two conditions this module reads out of the body: a
+ * content filter or a dropped agent connection recorded as a plain 502 would
+ * otherwise fall back to the status and become retryable `SERVER` again, which
+ * is the deadlock this connector exists to avoid.
+ *
+ * Only those two are read from a raw body. A 409 with no envelope stays the
+ * conservative uncertain outcome, because an unreadable conflict is not enough
+ * to claim the delivered history moved.
+ *
  * @param status - HTTP status.
  * @param headers - response headers.
  * @param body - raw text read from the response.
@@ -195,28 +247,47 @@ export function meridianErrorFromText(status, headers, body) {
   try {
     raw = JSON.parse(body)
   } catch (_nonJsonGatewayError) {
-    // A gateway that is not Meridian still returns an authoritative status.
     raw = undefined
   }
   const error = meridianError(raw, status, headers)
-  if (raw === undefined && body.length > 0) {
-    return new LlmError(`${error.message} [${body.slice(0, 400)}]`, error.code, {
-      ...error.failure.status === undefined ? {} : { status: error.failure.status },
-      ...error.failure.providerRetryAfterMs === undefined ? {} : { providerRetryAfterMs: error.failure.providerRetryAfterMs },
-    })
+  if (raw !== undefined || body.length === 0) return error
+  const facts = {
+    ...error.failure.status === undefined ? {} : { status: error.failure.status },
+    ...error.failure.providerRetryAfterMs === undefined ? {} : { providerRetryAfterMs: error.failure.providerRetryAfterMs },
+    ...error.failure.requestId === undefined ? {} : { requestId: error.failure.requestId },
   }
-  return error
+  // Classification reads the whole body; only the *message* is capped, so an
+  // error page that prefixes a long HTML preamble before the provider's own
+  // wording is still recognised.
+  const detail = body.slice(0, 400)
+  if (isContentFiltered(body)) return contentFiltered(detail, facts)
+  if (isAgentInterrupted(body)) {
+    return new LlmError(`Meridian Antigravity: ${detail}`, 'MERIDIAN_AGENT_INTERRUPTED', facts)
+  }
+  return new LlmError(`${error.message} [${detail}]`, error.code, facts)
 }
 
 /**
- * A malformed or prematurely closed server-sent event stream. Marked
- * `TRANSPORT` so the bounded retry policy may re-ask with the same identity,
- * which is safe because no tool block is ever delivered before `message_stop`.
+ * An interrupted stream: either one the backend refused to generate, or a real
+ * transport fault.
+ *
+ * A transport fault is marked `TRANSPORT` so the bounded retry policy may re-ask
+ * with the same identity, which is safe with respect to *tool execution* because
+ * no tool block is ever delivered before `message_stop`. That is not the whole
+ * story on a continuation: Meridian consumes the accepted tool results on the
+ * request side, so a retry can re-present a batch it has already released. The
+ * transport therefore reclassifies a cut stream on a continuation as
+ * `MERIDIAN_BATCH_SPENT` rather than relying on this code alone.
+ *
+ * A blocked generation must not be retried: the backend refused to produce the
+ * output, so the same bytes are blocked again, and a retry only reaches
+ * Meridian's spent-batch refusal. That is how a content filter used to leave a
+ * conversation permanently stuck. It is classified `CONTENT_FILTERED` instead,
+ * which the retry policy does not retry.
  *
  * A quota failure arrives the same way, as an error event inside an otherwise
- * successful stream, and is the exception: it is classified `QUOTA` so it is not
- * retried, and the reset window stated in the message becomes the retry-after the
- * harness reports.
+ * successful stream, and keeps its own `QUOTA` classification so the reset window
+ * stated in the message becomes the retry-after the harness reports.
  */
 export function streamInterrupted(detail, cause) {
   const quota = quotaFailure(detail)
@@ -230,10 +301,42 @@ export function streamInterrupted(detail, cause) {
       },
     )
   }
+  if (isContentFiltered(detail)) {
+    return contentFiltered(detail, cause === undefined ? undefined : { cause })
+  }
   return new LlmError(
     `Meridian Antigravity stream ended before message_stop (${detail})`,
     'TRANSPORT',
     cause === undefined ? undefined : { cause },
+  )
+}
+
+/**
+ * A continuation whose tool result Meridian accepted and whose reply never arrived.
+ *
+ * Replaces a retryable classification once the transport knows the request was a
+ * continuation Meridian had already answered: the batch is spent, so re-sending
+ * the same body can only be refused as a continuation conflict. Deliberately
+ * absent from the retry policy, so the harness reports the failure instead of
+ * producing a second, less legible one.
+ *
+ * @param failure - the cut-stream failure being replaced.
+ * @returns the non-retryable replacement, carrying the original's facts.
+ */
+export function batchSpent(failure) {
+  const facts = failure?.failure ?? {}
+  return new LlmError(
+    'Meridian accepted this turn\'s tool results and the generation ended before any reply, so the batch is'
+    + ' spent: re-sending the same request can only be refused as a continuation conflict. The conversation'
+    + ' itself is intact. Re-issue the instruction as a new message, or fork the session from before this'
+    + ` turn. (${failure instanceof Error ? failure.message : String(failure)})`,
+    'MERIDIAN_BATCH_SPENT',
+    {
+      ...facts.status === undefined ? {} : { status: facts.status },
+      ...facts.requestId === undefined ? {} : { requestId: facts.requestId },
+      ...facts.providerRetryAfterMs === undefined ? {} : { providerRetryAfterMs: facts.providerRetryAfterMs },
+      ...failure instanceof Error ? { cause: failure } : {},
+    },
   )
 }
 

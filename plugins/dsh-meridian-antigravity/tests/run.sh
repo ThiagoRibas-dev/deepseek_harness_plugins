@@ -39,4 +39,6 @@ node plugin/tests/serialize-compaction.mjs "$@"
 echo
 node plugin/tests/serialize-notices.mjs "$@"
 echo
+node plugin/tests/spent-batch.mjs "$@"
+echo
 exec node plugin/tests/conformance.mjs "$@"
