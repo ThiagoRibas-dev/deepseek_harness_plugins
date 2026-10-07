@@ -12,7 +12,9 @@
 
 import { LlmError, attributionHeaders } from '@deepseek-ai/dsh-llm'
 import { batchSpent, meridianErrorFromText, streamInterrupted } from './errors.js'
-import { blockedReplyNotice, isSpentBatch, spentBatchNotice } from './failure.js'
+import {
+  blockedReplyNotice, isSpentBatch, rewrittenContinuationNotice, spentBatchNotice,
+} from './failure.js'
 import { enforceRequestBudget, serializeRequest } from './serialize.js'
 import { continuationHint } from './continuation.js'
 import { logicalRequestHash } from './idempotency.js'
@@ -136,9 +138,17 @@ export async function* runTurn(dependencies, options) {
       // this branch has to detect the block itself. A block on a turn with no
       // continuation is not repaired, because no tool result is left unanswered
       // and the user can send the request again.
+      const code = failure.failure?.code
       const spent = isSpentBatch(failure.failure?.message ?? failure.message)
-      const blocked = failure.failure?.code === 'CONTENT_FILTERED' && continuation !== undefined
-      if (connection.repairSpentBatch === true && (spent || blocked)) {
+      const blocked = code === 'CONTENT_FILTERED' && continuation !== undefined
+      // A refused continuation is about to be refused again: the rewritten
+      // message is still in the transcript, and every later request re-presents
+      // it. Meridian's verdict is the confirmation, so no local guess about the
+      // prefix is involved. Left as an error, this repeats for every following
+      // turn until an assistant message lands after the tool results, which is
+      // what the notice does.
+      const rewritten = code === 'MERIDIAN_CONTINUATION_CONFLICT' && continuation !== undefined
+      if (connection.repairSpentBatch === true && (spent || blocked || rewritten)) {
         // A blocked turn can arrive late, after the model has streamed most of an
         // answer. That text is kept and the notice says so, rather than being
         // discarded along with the failed turn.
@@ -148,9 +158,16 @@ export async function* runTurn(dependencies, options) {
           + ` completed (${shown.length > 0 ? 'a partial reply was delivered' : 'no reply was produced'});`
           + ' committing a notice so the conversation can continue',
         )
-        const notice = shown.length > 0
-          ? blockedReplyNotice(continuation?.results)
-          : spentBatchNotice(continuation?.results)
+        // `spent` wins over `rewritten`: Meridian's "already consumed" text is
+        // itself a 409, so it arrives under the same code and is the more
+        // specific account of what happened.
+        const notice = spent
+          ? spentBatchNotice(continuation?.results)
+          : rewritten
+            ? rewrittenContinuationNotice(continuation?.results)
+            : shown.length > 0
+              ? blockedReplyNotice(continuation?.results)
+              : spentBatchNotice(continuation?.results)
         for (const chunk of translator.closeWith(notice)) yield chunk
         succeeded = true
         ledger.settle(hash, true)

@@ -382,11 +382,27 @@ await check('the repair is off when repairSpentBatch is false', async () => {
   )
 })
 
-await check('a genuinely rewritten transcript is never papered over', async () => {
+await check('a refused continuation is repaired, and the notice names the cause', async () => {
+  // The transcript was rewritten after Meridian delivered it, so this
+  // continuation is refused deterministically and would be refused again on
+  // every later turn. Committing the notice is what ends that.
+  state.mode = 'refuse'
+  state.refuseDetail = REWRITE_DETAIL
+  const chunks = await collect(runTurn(deps(), options(continuation())))
+  const text = textOf(chunks)
+  assert.match(text, /^\[Meridian Antigravity\]/, 'the turn must be closed by a notice, not an error')
+  assert.match(text, /the transcript changed after Meridian received it/)
+  assert.match(text, /tool-result pruner or by a compaction/)
+  assert.equal(chunks.at(-1).reason.kind, 'stop')
+})
+
+await check('a conflict with no continuation is still reported as an error', async () => {
+  // Nothing is stranded when the turn carried no tool results, so the connector
+  // reports Meridian's verdict instead of inventing a reply.
   state.mode = 'refuse'
   state.refuseDetail = REWRITE_DETAIL
   await expectFailure(
-    collect(runTurn(deps(), options(continuation()))),
+    collect(runTurn(deps(), options([user('hi')]))),
     'MERIDIAN_CONTINUATION_CONFLICT',
   )
 })

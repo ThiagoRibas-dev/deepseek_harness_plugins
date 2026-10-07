@@ -81,6 +81,29 @@ export function isAgentInterrupted(detail) {
 }
 
 /**
+ * The text committed when a continuation is refused because the transcript
+ * changed after Meridian delivered it.
+ *
+ * The harness rewrote a message the provider had already been given — a
+ * tool-result prune or a compaction between a tool call and its result — so
+ * Meridian refuses that continuation deterministically and would refuse it
+ * again. Committing this closes the turn and lets the conversation continue.
+ *
+ * @param results - how many tool results the refused continuation carried, when known.
+ * @returns the notice text.
+ */
+export function rewrittenContinuationNotice(results) {
+  const batch = typeof results === 'number' && results > 0
+    ? `This turn's batch of ${results} tool result${results === 1 ? '' : 's'} was delivered`
+    : 'This turn\'s tool batch was delivered'
+  return `${NOTICE_PREFIX} ${batch}, but the transcript changed after Meridian received it, so the`
+    + ' continuation was refused. That happens when a message the provider had already been given is'
+    + ' rewritten mid-turn — by the tool-result pruner or by a compaction — and Meridian pins a'
+    + ' continuation to the history it already delivered. This notice closes the turn so the'
+    + ' conversation can continue. Re-issue your last instruction; the work above is intact.'
+}
+
+/**
  * The prefix marking text this connector authored rather than a model.
  *
  * A notice arrives as an ordinary assistant message and completes its turn, so
