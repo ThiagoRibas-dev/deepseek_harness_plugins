@@ -16,6 +16,7 @@ import {
   isAgentInterrupted,
   isContentFiltered,
   isSpentBatch,
+  rewrittenContinuationNotice,
   spentBatchNotice,
 } from '../lib/failure.js'
 
@@ -124,5 +125,30 @@ test('the blocked-reply notice reads correctly for one result and an unknown cou
   assert.doesNotMatch(blockedReplyNotice(1), /1 tool results/)
   for (const unknown of [undefined, 0, -1, 'many']) {
     assert.match(blockedReplyNotice(unknown), /This turn's tool batch was consumed/)
+  }
+})
+
+test('the refused-continuation notice names every cause and chooses none', () => {
+  // Meridian's 409 covers the delivered history, the tool batch and the model
+  // or execution controls, and the connector cannot see which moved. Asserting
+  // a rewrite would be a claim it cannot support.
+  const notice = rewrittenContinuationNotice(2)
+  assert.match(notice, /^\[Meridian Antigravity\] This turn's batch of 2 tool results was delivered/)
+  assert.match(notice, /Meridian refused the continuation/)
+  assert.match(notice, /no longer matches the request/)
+  assert.match(notice, /rewritten after delivery/)
+  assert.match(notice, /tool-result pruner/)
+  assert.match(notice, /compaction between a tool call and its result/)
+  assert.match(notice, /model change applied while a tool batch was open/)
+  assert.match(notice, /closes the turn so the conversation can continue/)
+  // The claim the notice used to make, and must not make again.
+  assert.doesNotMatch(notice, /the transcript changed/)
+})
+
+test('the refused-continuation notice reads correctly for one result and an unknown count', () => {
+  assert.match(rewrittenContinuationNotice(1), /batch of 1 tool result /)
+  assert.doesNotMatch(rewrittenContinuationNotice(1), /1 tool results/)
+  for (const unknown of [undefined, 0, -1, 'many']) {
+    assert.match(rewrittenContinuationNotice(unknown), /This turn's tool batch was delivered/)
   }
 })

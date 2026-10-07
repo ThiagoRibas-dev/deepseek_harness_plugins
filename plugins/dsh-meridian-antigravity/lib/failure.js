@@ -81,13 +81,17 @@ export function isAgentInterrupted(detail) {
 }
 
 /**
- * The text committed when a continuation is refused because the transcript
- * changed after Meridian delivered it.
+ * The text committed when a continuation is refused because it no longer matches
+ * the turn Meridian already delivered.
  *
- * The harness rewrote a message the provider had already been given — a
- * tool-result prune or a compaction between a tool call and its result — so
- * Meridian refuses that continuation deterministically and would refuse it
- * again. Committing this closes the turn and lets the conversation continue.
+ * Meridian's text for this 409 names three possible causes — the delivered
+ * history, the tool batch, or the model and execution controls — and the
+ * connector cannot tell which one moved, so the notice names them all rather
+ * than asserting a rewrite it did not observe. The two that have been seen live
+ * are a message rewritten after delivery (a tool-result prune or a compaction
+ * between a tool call and its result) and a model change applied while a tool
+ * batch was open. Committing this closes the turn, which is what the next
+ * request needs.
  *
  * @param results - how many tool results the refused continuation carried, when known.
  * @returns the notice text.
@@ -96,11 +100,11 @@ export function rewrittenContinuationNotice(results) {
   const batch = typeof results === 'number' && results > 0
     ? `This turn's batch of ${results} tool result${results === 1 ? '' : 's'} was delivered`
     : 'This turn\'s tool batch was delivered'
-  return `${NOTICE_PREFIX} ${batch}, but the transcript changed after Meridian received it, so the`
-    + ' continuation was refused. That happens when a message the provider had already been given is'
-    + ' rewritten mid-turn — by the tool-result pruner or by a compaction — and Meridian pins a'
-    + ' continuation to the history it already delivered. This notice closes the turn so the'
-    + ' conversation can continue. Re-issue your last instruction; the work above is intact.'
+  return `${NOTICE_PREFIX} ${batch}, but Meridian refused the continuation: what it had already`
+    + ' delivered no longer matches the request. That covers a message rewritten after delivery — by'
+    + ' the tool-result pruner, or by a compaction between a tool call and its result — and a model'
+    + ' change applied while a tool batch was open. This notice closes the turn so the conversation'
+    + ' can continue. Re-issue your last instruction; the work above is intact.'
 }
 
 /**

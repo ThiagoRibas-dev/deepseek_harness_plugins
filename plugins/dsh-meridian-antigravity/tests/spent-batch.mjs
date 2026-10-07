@@ -382,17 +382,21 @@ await check('the repair is off when repairSpentBatch is false', async () => {
   )
 })
 
-await check('a refused continuation is repaired, and the notice names the cause', async () => {
-  // The transcript was rewritten after Meridian delivered it, so this
-  // continuation is refused deterministically and would be refused again on
-  // every later turn. Committing the notice is what ends that.
+await check('a refused continuation is repaired, and the notice names every cause', async () => {
+  // The request no longer matches what Meridian delivered, so this continuation
+  // is refused and would be refused again on every later turn. Committing the
+  // notice is what ends that. Which of Meridian's causes moved is not knowable
+  // here, so the notice states all of them and asserts none.
   state.mode = 'refuse'
   state.refuseDetail = REWRITE_DETAIL
   const chunks = await collect(runTurn(deps(), options(continuation())))
   const text = textOf(chunks)
   assert.match(text, /^\[Meridian Antigravity\]/, 'the turn must be closed by a notice, not an error')
-  assert.match(text, /the transcript changed after Meridian received it/)
-  assert.match(text, /tool-result pruner or by a compaction/)
+  assert.match(text, /Meridian refused the continuation/)
+  assert.match(text, /no longer matches the request/)
+  assert.match(text, /tool-result pruner/)
+  assert.match(text, /model change applied while a tool batch was open/)
+  assert.doesNotMatch(text, /the transcript changed/)
   assert.equal(chunks.at(-1).reason.kind, 'stop')
 })
 
