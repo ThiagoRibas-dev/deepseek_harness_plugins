@@ -133,3 +133,78 @@ test('a long list of ids is summarised rather than dumped', () => {
   assert.match(hint, /\+2 more/)
   assert.doesNotMatch(hint, /call_00_c/)
 })
+
+/**
+ * The repair gate is `continuation !== undefined`, so `analyzeContinuation` must
+ * see exactly the requests that strand a batch: one whose tool results no
+ * assistant message has answered yet. Every conflict in the session logs had
+ * that shape — 45 of them across 30 sessions, including the four consecutive
+ * ones in `session-0bc7fee5` — so the gate reached all of them and widening it
+ * to a separately computed predicate would change nothing.
+ */
+test('the repair gate is exactly "a tool result no assistant message has answered"', () => {
+  const meridianCall = assistant('meridian-antigravity', ['toolu_agy_aaaa'])
+  const shapes = {
+    'a batch with a user message after it': [user('go'), meridianCall, result('toolu_agy_aaaa'), user('keep going')],
+    'a batch with the context-pressure notice after it': [user('go'), meridianCall, result('toolu_agy_aaaa'), user('Context is at 83% of this model\'s window')],
+    'two batches with no assistant between them': [user('go'), meridianCall, result('toolu_agy_aaaa'), result('toolu_agy_aaaa')],
+    'a batch answered by an assistant message': [user('go'), meridianCall, result('toolu_agy_aaaa'), assistant('meridian-antigravity', [])],
+    'an ordinary turn': [user('go'), assistant('meridian-antigravity', []), user('again')],
+    'a batch answered, then a new message': [user('go'), meridianCall, result('toolu_agy_aaaa'), assistant('meridian-antigravity', []), user('again')],
+  }
+
+  for (const [name, messages] of Object.entries(shapes)) {
+    let lastAssistant = -1
+    let lastResult = -1
+    for (const [index, message] of messages.entries()) {
+      if (message.role === 'assistant') lastAssistant = index
+      if (message.role === 'tool') lastResult = index
+    }
+    assert.equal(
+      analyzeContinuation(messages) !== undefined,
+      lastResult > lastAssistant,
+      `${name}: the gate and the unresolved-batch predicate must agree`,
+    )
+  }
+})
+
+test('the four live conflict shapes are all reached by the gate', () => {
+  const meridianCall = assistant('meridian-antigravity', ['toolu_agy_aaaa'])
+  const result1 = result('toolu_agy_aaaa')
+  // Every shape below is a request that Meridian answered 409 to. The connector
+  // repairs a conflict only when this analysis is defined.
+  const conflictShapes = [
+    // session-0bc7fee5 turn 4, and 15 other sessions: a prune landed between the
+    // call and its result.
+    [user('go'), meridianCall, result1],
+    // session-0bc7fee5 turn 5, and the original session-293cca94 incident.
+    [user('go'), meridianCall, result1, result1],
+    // session-0bc7fee5 turns 6 and 7: after the failure the user simply sent
+    // another message, and the transcript still ended on the unanswered batch.
+    [user('go'), meridianCall, result1, user('keep going')],
+    // session-5f7907a5 and session-c2969216: a steered notice is appended as a
+    // user message at the next step.
+    [user('go'), meridianCall, result1, user('Context is at 77% of this model\'s window')],
+    // session-a1d6e24f: the checkpoint reminder is a user message too.
+    [user('go'), meridianCall, result1, user('checkpoint'), user('Context is at 77%')],
+  ]
+
+  for (const [index, messages] of conflictShapes.entries()) {
+    assert.notEqual(analyzeContinuation(messages), undefined, `live shape ${index + 1}`)
+  }
+})
+
+test('a repaired transcript is no longer a continuation', () => {
+  // What the connector commits after a repair. The next request carries an
+  // assistant message after the results, so the gate is false: a conflict on it
+  // is reported, never repaired again. Whether Meridian accepts that request is
+  // a live question, not one a local predicate can answer.
+  const diagnosis = analyzeContinuation([
+    user('go'),
+    assistant('meridian-antigravity', ['toolu_agy_aaaa']),
+    result('toolu_agy_aaaa'),
+    assistant('meridian-antigravity', []),
+    user('go on'),
+  ])
+  assert.equal(diagnosis, undefined)
+})

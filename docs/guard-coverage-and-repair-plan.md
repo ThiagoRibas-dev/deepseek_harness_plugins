@@ -6,7 +6,7 @@ Status: approved 2026-10-07. Fixes land as separate commits, in the order below.
 
 Make both fixes actually work, close the two gaps found in review, and make the ones that cannot be tested offline verifiable in the live environment.
 
-**Success criteria:** `standard`-preset sessions run the guarded pruner; a refused continuation recovers whether or not the failing request itself carries a batch; the notice never asserts a cause it cannot know; and each of these is either covered by a test or has a named, reproducible live check.
+**Success criteria:** `standard`-preset sessions run the guarded pruner; a refused continuation is repaired, which the live evidence shows means every conflict shape observed so far (Fix 2's amendment); the notice never asserts a cause it cannot know; and each of these is either covered by a test or has a named, reproducible live check.
 
 ## Fix 1 — resolve the guard plugin names (D1, highest priority)
 
@@ -24,26 +24,23 @@ The override's `name: './engine.js'` / `'./pruner.js'` do not resolve. The plan 
 
 **Rollback:** revert the one file; the guard bundle is a link into this workspace.
 
-## Fix 2 — widen the repair gate to an unresolved batch (G1)
+## Fix 2 — the repair gate is already as wide as it can usefully be (G1 withdrawn)
 
-The repair requires `continuation !== undefined`, i.e. trailing tool results. After the first refusal the next turn carries a new user message, so the gate is false and the conflict is thrown again.
+**Amended 2026-10-07, before any code change.** The planned predicate turned out to be redundant, so it was not added.
 
-**Step 2.1 — add the predicate** to `plugins/dsh-meridian-antigravity/lib/continuation.js` (pure, already message-oriented):
+`analyzeContinuation` scans the messages after the last assistant message and returns `undefined` when none of them is a tool result. That is the same condition as "the last tool result comes after the last assistant message", which is the predicate the plan proposed adding as `hasUnresolvedBatch`. The two are equal for every message list, so widening the gate to it changes nothing.
 
-```
-hasUnresolvedBatch(messages):
-  lastAssistant = highest index with role 'assistant'
-  lastToolResult = highest index with role 'tool'
-  return lastToolResult > lastAssistant
-```
+The evidence agrees. Every `MERIDIAN_CONTINUATION_CONFLICT` in the session store — 45 of them, across 30 sessions — arrived on a request with trailing tool results, so the existing gate `continuation !== undefined` reached all of them. That includes the four consecutive refusals in `session-0bc7fee5`: turns 4 and 5 carried a batch directly, and turns 6 and 7 carried the same still-unanswered batch plus the user's next message, which does not clear it.
 
-That is the condition Meridian refuses on: a delivered assistant turn whose tool results nothing has answered. It holds with or without a trailing user message.
+What the plan described as the gap — "later turns over a broken prefix still error" — does not follow, because a later turn only stops looking like a continuation once something has answered the batch, and the repair is that something.
 
-**Step 2.2 — widen only the repair gate** in `lib/transport.js`: the conflict arm becomes `continuation !== undefined || hasUnresolvedBatch(options.messages)`.
+**Residual, deliberately not repaired.** After a repair commits the notice, the transcript ends with an assistant message, so the next request is no longer a continuation. If Meridian refused *that* request, the conflict would be reported rather than repaired. That is the right behaviour: nothing is stranded, and committing a second notice would fabricate an assistant turn for a request that produced no output. Whether Meridian refuses it is the live question Fix 4 answers.
 
-**Deliberate non-change:** `spentIfContinuation` keeps using `continuation !== undefined`. Widening it would reclassify recoverable failures on ordinary new turns as `MERIDIAN_BATCH_SPENT`. Recorded in a code comment.
+**Step 2.1 — withdrawn.** No predicate added.
+**Step 2.2 — no change** to `lib/transport.js`.
+**Step 2.3 — tests added** in `tests/continuation.test.js`: the gate and the unresolved-batch predicate agree across six shapes; the five distinct live conflict shapes are all reached; and a repaired transcript is not a continuation.
 
-**Step 2.3 — tests** in `tests/spent-batch.mjs`: conflict over `[…, assistant tool-call, tool-result, user message]` is repaired; conflict over a clean transcript with no outstanding batch still errors; the existing no-continuation case still errors.
+One observation from the same evidence belongs to Fix 4: the refusal is not always permanent. `session-0bc7fee5` turn 8 succeeded on a prefix identical to the one turns 5–7 were refused on, seven seconds after turn 7's refusal, with no prune in between. The mechanism is unknown, so no retry policy was changed for it.
 
 ## Fix 3 — stop the notice asserting one cause (G3)
 
