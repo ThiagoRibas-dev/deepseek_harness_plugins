@@ -443,3 +443,48 @@ $ node --test tests/*.test.js
   as were the §5 dd35 notice guard and `dm_notes` guidance. Plugin code is imported once
   per process; no `cordis.patch.yml` changed, so no bundle reinstall is needed — only a
   restart.
+
+## 9. Live verification owed — the restart checklist
+
+Everything below is written but not yet loaded. A plugin is imported once per process, so these
+observations need a restart of the web service; no bundle was reinstalled and no manifest changed.
+
+### 9.1 The guard reaches a `standard` session
+
+1. After the restart, `plugin_manager action=list_plugins`. Expect `preset-standard` on the roster with
+   no activation diagnostic, the host-plane `compaction-basic` and `tool-result-pruner` rows
+   `enabled: false`, and `compaction-guard-engine` / `compaction-guard-pruner` present with their config.
+   A broken declaration still appears on the roster but cannot compose a session.
+2. Start a **new** session on the `standard` preset. Existing sessions keep the plugin revision they
+   started with, so an old session proves nothing.
+3. In it, run a turn with enough tool calls to raise context pressure, then read the session JSONL for
+   `compaction/prune`. The guard's whole job is that no prune lands while a tool result is unanswered,
+   so a `compaction/prune` between an `assistant/message` carrying a tool call and its `tool/result` is
+   the failure signal.
+
+### 9.2 The repair makes the next request ordinary again
+
+`session-0bc7fee5` ("Passive RAG for D&D Recap") is the ready-made case: its prefix was already
+rewritten when turns 4-7 were refused, and its transcript still ends on an unanswered batch — the last
+assistant message is seq 217 and the tool results at seq 219 and 222 have nothing after them.
+
+1. Send any message. Expect the turn to end `completed` with a `[Meridian Antigravity]` notice instead
+   of `turn/end` carrying `MERIDIAN_CONTINUATION_CONFLICT`.
+2. Send a **second** message. This is the decisive observation.
+   - It reaches the model: the repair restores continuability, and nothing further is needed.
+   - It ends in `MERIDIAN_CONTINUATION_CONFLICT` again: the repair is cosmetic for a rewritten prefix,
+     because the notice the connector commits was never delivered to Meridian and the divergence is
+     permanent. The notice then has to say so and name the remedy — fork from before the affected turn
+     — and the case for talking to `agy` directly gets stronger.
+
+   A single success is not proof of the first outcome: turn 8 of that session was accepted on a prefix
+   identical to the one turns 5-7 were refused on, seven seconds after turn 7, with no prune in
+   between. Whatever cleared there is not understood. What matters for the notice is only the binary
+   above, not which mechanism produced it.
+
+### 9.3 If it fails, capture the evidence
+
+Set `captureRequestBodies: true` and `captureDir: <a directory outside the repositories>` on the
+`llm-meridian-antigravity` row and repeat. Two consecutive captures differ in exactly the messages that
+moved; the files are complete transcripts and are pruned to the newest 50. This is the material that
+decides whether the connector keeps translating for Meridian or talks to `agy` itself.
