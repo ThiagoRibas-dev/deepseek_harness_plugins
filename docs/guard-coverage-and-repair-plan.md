@@ -1,12 +1,12 @@
 # Guard coverage and connector repair — implementation plan
 
-Status: approved 2026-10-07. Fixes land as separate commits, in the order below.
+Status: approved 2026-10-07, implemented in the commits that follow. Two of the five items changed shape against the evidence and are recorded as amendments: Fix 2 was withdrawn, and Fix 4's post-restart result corrected a claim in the plan.
 
 ## Goal
 
 Make both fixes actually work, close the two gaps found in review, and make the ones that cannot be tested offline verifiable in the live environment.
 
-**Success criteria:** `standard`-preset sessions run the guarded pruner; a refused continuation is repaired, which the live evidence shows means every conflict shape observed so far (Fix 2's amendment); the notice never asserts a cause it cannot know; and each of these is either covered by a test or has a named, reproducible live check.
+**Success criteria:** `standard`-preset sessions run the guarded pruner; a refused continuation is repaired on every conflict shape the corpus contains (Fix 2's amendment); the notice never asserts a cause it cannot know; and each of these is either covered by a test or has a named, reproducible live check.
 
 ## Fix 1 — resolve the guard plugin names (D1, highest priority)
 
@@ -30,9 +30,29 @@ The override's `name: './engine.js'` / `'./pruner.js'` do not resolve. The plan 
 
 `analyzeContinuation` scans the messages after the last assistant message and returns `undefined` when none of them is a tool result. That is the same condition as "the last tool result comes after the last assistant message", which is the predicate the plan proposed adding as `hasUnresolvedBatch`. The two are equal for every message list, so widening the gate to it changes nothing.
 
-The evidence agrees. Every `MERIDIAN_CONTINUATION_CONFLICT` in the session store — 45 of them, across 30 sessions — arrived on a request with trailing tool results, so the existing gate `continuation !== undefined` reached all of them. That includes the four consecutive refusals in `session-0bc7fee5`: turns 4 and 5 carried a batch directly, and turns 6 and 7 carried the same still-unanswered batch plus the user's next message, which does not clear it.
+The evidence agrees. Every `MERIDIAN_CONTINUATION_CONFLICT` in the session store — 52 of them, across 35 sessions — arrived on a request with trailing tool results, so the existing gate `continuation !== undefined` reached all of them. That includes the four consecutive refusals in `session-0bc7fee5`: turns 4 and 5 carried a batch directly, and turns 6 and 7 carried the same still-unanswered batch plus the user's next message, which does not clear it.
+
+A prune cannot remove a trailing tool result, only change its content, which is why the shape survives one: the shipped pruner appends a *replacement* `tool/result` carrying `surfaceOp: { op: 'replace', startSeq, endSeq }` (`compaction-tool-result-pruner/src/index.ts:165`) and throws if the replacement is not smaller. A rewritten prefix is a changed hash, not a shorter transcript.
 
 What the plan described as the gap — "later turns over a broken prefix still error" — does not follow, because a later turn only stops looking like a continuation once something has answered the batch, and the repair is that something.
+
+### Which conflicts the guard actually addresses
+
+Counted from the session store by the preset each session used — its `agent-preset/selected` event, or the session header when it has none:
+
+| preset used | sessions with a conflict | conflicts | sessions that pruned | prunes |
+| --- | --- | --- | --- | --- |
+| `dd35` | 24 | 30 | 3 | 36 |
+| `standard` | 7 | 11 | 7 | 28 |
+| `cordis` | 4 | 11 | 4 (three with 28 each) | 315 |
+
+Two consequences, and the second is the one that matters:
+
+- `standard` and `cordis` are the prune population. Every `standard` conflict session logged `compaction/prune` events, and three of the four `cordis` ones logged 28 each. This is the population the guard is for.
+- `dd35` is not. **27 of its 30 conflicts come from sessions with no `compaction/prune` event at all**, and `dd35` has mounted the guard since 2026-10-04, so those conflicts continued after the guard was in place. A `model/selection` event inside the same turn window accounts for 16 of the 52 conflicts overall, mostly a slug change inside `meridian-antigravity` (`gemini-3.6-flash-medium` → `-high`), which is Meridian's "model or execution controls changed" case. About a dozen `dd35` conflicts have neither a prune nor a model change and are unexplained.
+
+So the guard closes a demonstrated hole in `standard` and would close the same one in `cordis`; the repair is what covers the largest population, `dd35`. Neither is sufficient alone, and before this correction the documents implied the guard was the main fix.
+
 
 **Residual, deliberately not repaired.** After a repair commits the notice, the transcript ends with an assistant message, so the next request is no longer a continuation. If Meridian refused *that* request, the conflict would be reported rather than repaired. That is the right behaviour: nothing is stranded, and committing a second notice would fabricate an assistant turn for a request that produced no output. Whether Meridian refuses it is the live question Fix 4 answers.
 
@@ -64,7 +84,11 @@ Nothing offline proves that committing the notice makes Meridian accept the next
 
 **Acceptance:** written down in `docs/meridian-spent-batch-plan.md` either way, including a negative result.
 
-**Prerequisite:** the restart. Fixes 1–3 are inert until then.
+**Status after the 2026-10-07 restart.** One of the three unknowns is settled and one instruction of mine was wrong.
+
+- **Settled: the two absolute `file:///` URLs import under the loader.** `preset-dd35` declares the identical strings, and 77 of 84 `dd35` sessions ran dd35-scoped tools (`get_state`, `list_memories`, `roll_*`) as recently as 2026-10-07 03:18. A preset tree with one unresolvable row fails to mount as a whole, so those rows import. The `standard` override names the same files with the same strings.
+- **Wrong: `list_plugins` cannot confirm a preset's children.** `plugin_manager` reports `preset-standard` as `fiberPhase: active`, and that proves nothing: `agent-preset-registry` catches a child-mount failure into its own `broken` record and only calls `logger.warn` (`packages/preset/agent-preset-registry/src/index.ts:112-125`), so the Loader row stays active with the preset unusable. The journal also shows no lines at all since the restart, so a warning is not a usable signal either. The README instruction that said otherwise has been corrected; the only real check is a session on `standard` composing.
+- **Still open: whether the repair leaves the next request an ordinary call, and whether the deferral fires.** The only session to run since the override loaded is on `cordis`, which the override does not cover. No `dd35` session has ever logged a `compaction/prune` event, so the guard has never been observed pruning anywhere — which is consistent both with the deferral working and with the guarded pruner never running.
 
 ## Fix 5 — read before building the capture
 

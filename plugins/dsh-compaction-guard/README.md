@@ -131,10 +131,27 @@ plugin_manager action=list_plugins
 - `compaction-basic` → `enabled: false`
 - `tool-result-pruner` → `enabled: false`
 - `compaction-guard-engine` and `compaction-guard-pruner` → present, with config
-- `preset-standard` → active, with no diagnostic. A broken declaration still
-  appears on the roster but cannot compose a session, and its two compaction rows
-  are not Loader rows, so `list_plugins` will not show them. Check the row state,
-  not the rows inside it.
+
+Those three lines settle the host plane and nothing else. **A preset's own rows are
+not Loader rows, so `list_plugins` cannot confirm or refute the swap inside one.** In
+particular, `preset-standard` reporting `fiberPhase: active` means only that the
+declaration row mounted: `agent-preset-registry` catches a child-mount failure into its
+own `broken` record and calls `logger.warn`
+(`packages/preset/agent-preset-registry/src/index.ts:112-125`), so a preset whose guard
+rows failed to import still shows as active. The harness journal is no help either — it
+has emitted no lines at all between restarts.
+
+The two checks that do work are behavioural:
+
+- a session on that preset composes at all, which it cannot if a row failed to import;
+- a prune lands at a turn boundary. The guard defers only while a batch is pending, so a
+  guarded realm that never prunes anywhere is as consistent with a broken guard as with a
+  working one. `pruner.js` logs the deferral at `debug`; without that level, absence of
+  `compaction/prune` mid-batch is the only signal, and it is a weak one.
+
+As of 2026-10-07 neither check has been met: no `dd35` session has ever logged a
+`compaction/prune` event, and no session has run on `standard` since the override loaded.
+Treat the guard as unproven in a preset realm until one of them passes.
 
 If a `disabled` flag did not apply, move those two rows into the profile patch
 `$DSH_PROFILE_DIR/cordis.patch.yml`, which is applied after every bundle layer,

@@ -138,7 +138,7 @@ test('a long list of ids is summarised rather than dumped', () => {
  * The repair gate is `continuation !== undefined`, so `analyzeContinuation` must
  * see exactly the requests that strand a batch: one whose tool results no
  * assistant message has answered yet. Every conflict in the session logs had
- * that shape — 45 of them across 30 sessions, including the four consecutive
+ * that shape — 52 of them across 35 sessions, including the four consecutive
  * ones in `session-0bc7fee5` — so the gate reached all of them and widening it
  * to a separately computed predicate would change nothing.
  */

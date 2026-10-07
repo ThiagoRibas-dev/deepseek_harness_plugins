@@ -439,29 +439,42 @@ $ node --test tests/*.test.js
   file is re-injected as authoritative on every request.
 - **A branch is not a fresh session** — `fork` truncates history with no in-session
   marker. Recorded in `docs/chat-controls-implementation-plan.md` Phase 7.
-- **A restart is owed.** Everything in §6/§7 was written after the user's last restart,
-  as were the §5 dd35 notice guard and `dm_notes` guidance, and so were the compaction-guard
-  `preset-standard` override and the refused-continuation repair. Plugin code is imported once
-  per process; no bundle was reinstalled and no manifest changed, so only a restart is needed.
-  §9 is the checklist for what to observe after it.
+- **The restart was done on 2026-10-07 13:55.** It loaded the §5 dd35 notice guard and `dm_notes`
+  guidance, the compaction-guard `preset-standard` override, and the refused-continuation repair.
+  §9 is what is still owed after it, and what it already settled.
 
-## 9. Live verification owed — the restart checklist
+## 9. Live verification — the restart checklist
 
-Everything below is written but not yet loaded. A plugin is imported once per process, so these
-observations need a restart of the web service; no bundle was reinstalled and no manifest changed.
+The web service restarted on 2026-10-07 13:55, which loaded everything in §6/§7 plus the
+compaction-guard `preset-standard` override and the refused-continuation repair. One item below is
+already settled; the rest are still owed, and the harness has emitted no journal lines since the
+restart, so all of it has to be read from session JSONL rather than from logs.
+
+**Settled 2026-10-07: the two absolute `file:///` URLs import under the loader.** `preset-dd35`
+declares the identical strings, and 77 of 84 `dd35` sessions ran dd35-scoped tools (`get_state`,
+`list_memories`, `roll_*`), most recently at 03:18 that day. A preset tree with one unresolvable row
+refuses to mount as a whole, so those rows import. The `standard` override names the same two files
+with the same strings.
 
 ### 9.1 The guard reaches a `standard` session
 
-1. After the restart, `plugin_manager action=list_plugins`. Expect `preset-standard` on the roster with
-   no activation diagnostic, the host-plane `compaction-basic` and `tool-result-pruner` rows
-   `enabled: false`, and `compaction-guard-engine` / `compaction-guard-pruner` present with their config.
-   A broken declaration still appears on the roster but cannot compose a session.
-2. Start a **new** session on the `standard` preset. Existing sessions keep the plugin revision they
-   started with, so an old session proves nothing.
+1. `plugin_manager action=list_plugins`. This settles the host plane only: expect the host-plane
+   `compaction-basic` and `tool-result-pruner` rows `enabled: false`, and `compaction-guard-engine` /
+   `compaction-guard-pruner` present with their config. **It says nothing about a preset.**
+   `preset-standard` reports `fiberPhase: active` whether or not its children imported, because
+   `agent-preset-registry` catches a child-mount failure into its own `broken` record and only calls
+   `logger.warn` (`packages/preset/agent-preset-registry/src/index.ts:112-125`). The harness journal has
+   emitted no lines at all between restarts, so that warning is not observable either.
+2. Start a **new** session on the `standard` preset. That it composes at all is the first real check: a
+   preset tree with one unresolvable row refuses to mount. Existing sessions keep the plugin revision
+   they started with, so an old session proves nothing.
 3. In it, run a turn with enough tool calls to raise context pressure, then read the session JSONL for
-   `compaction/prune`. The guard's whole job is that no prune lands while a tool result is unanswered,
-   so a `compaction/prune` between an `assistant/message` carrying a tool call and its `tool/result` is
-   the failure signal.
+   `compaction/prune`. Two things are worth knowing about this check, both learned the hard way:
+   - a `compaction/prune` between an `assistant/message` carrying a tool call and its `tool/result` is
+     the failure signal;
+   - **the absence of one is weak evidence.** No `dd35` session has ever logged a `compaction/prune`
+     event, so a guarded realm that never prunes looks identical to one whose pruner is broken. What
+     would settle it is a prune landing at a *turn boundary*, which the guard permits by design.
 
 ### 9.2 The repair makes the next request ordinary again
 
