@@ -14,9 +14,10 @@
  *                    system-prompt prefix mid-session.
  *
  * Neither file costs a model call. Both providers run at assembly time and
- * resolve the campaign from the assembling agent's *own* session cwd, so a
- * different session, or a campaign switched with `set_active_campaign`, is
- * reflected on the very next request.
+ * resolve the campaign attached to the assembling agent's *own* session, so a
+ * different session, or a campaign chosen with `set_active_campaign`, is
+ * reflected on the very next request while an unbound session contributes
+ * nothing at all.
  *
  * Both bodies are contributed with `interpolate: false`. Campaign prose is
  * arbitrary text and must never be scanned for `{{variable}}` groups: an
@@ -27,7 +28,8 @@
  * contributes an empty string, which drops the contribution entirely.
  */
 import { readFileSync, statSync } from 'node:fs'
-import { campaignFilePath, readActiveCampaignIn } from './state-store.js'
+import { campaignTurnKey, createTurnFrozenContext } from './context-freeze.js'
+import { campaignFilePath, resolveSessionCampaignIn } from './state-store.js'
 
 export const name = 'dd35-prompt'
 
@@ -96,10 +98,11 @@ function cap(text, maxBytes, label) {
   return `${slice}${notice}`
 }
 
-/** The active campaign for one assembly, or null when the session has none. */
+/** The campaign attached to the assembling session, or null when it has none. */
 function activeCampaign(assemble) {
-  const root = assemble?.agent?.session?.header?.cwd
-  const id = readActiveCampaignIn(root)
+  const session = assemble?.agent?.session
+  const root = session?.header?.cwd
+  const id = resolveSessionCampaignIn(root, session).id
   return id === null ? null : { root, id }
 }
 
@@ -138,11 +141,10 @@ function notesContext(assemble, opts) {
   if (found === null) return ''
   const lines = [
     NOTES_HEADING,
-    `Your durable campaign scratchpad is \`${found.rel}\`, relative to your working directory. It is reloaded into context automatically on every request, so anything written there survives compaction and long absences.`,
-    'Write down anything you may need to be reminded of. House rules are the primary use, but so are active quests, the intent behind a plot arc, a detail you want to bring up several sessions from now, rulings you have already given, and the names, faces, promises, threats and debts you would otherwise lose. The notes are yours — the player does not see them unless you narrate them.',
-    'This file is the home for campaign-specific truth. Do not park it in AGENTS.md or any other workspace-global file: those are shared by every campaign in this folder, so what you store there leaks across campaigns.',
-    'Do not record anything that changes from turn to turn. This includes the current scene, party location, turn order, hit points, and conditions. Those details are already retrieved fresh from get_state. Instead, write reminders, notes, and other facts that remain true across multiple turns and sessions.',
-    `\`read\` \`${found.rel}\` before changing it. Use \`edit\` to append an entry; use \`write\` only when you mean to replace the whole file. Date entries against the in-game clock.`,
+    `The file \`${found.rel}\` is your notebook behind the DM screen. It reloads automatically on each request and survives compaction. The player cannot see it unless you narrate it.`,
+    'Record house rules, active quests, NPC secrets, plot arc plans, and other information that you want to be keep in mind for the future. Keep campaign notes in this file rather than in AGENTS.md.',
+    'Do not write down transient round-to-round state (current scene, party location, turn order, hit points, or conditions) — the state block and `get_state` already return those.',
+    `\`read\` \`${found.rel}\` before editing. Use \`edit\` to append, \`write\` to replace. Date entries against the in-game clock.`,
   ]
   if (found.body === null || found.body.trim() === '') {
     lines.push('', '_No notes yet — the file does not exist. Create it with `write` the first time the campaign gives you something worth keeping._')
@@ -155,6 +157,16 @@ function notesContext(assemble, opts) {
 /** A positive integer config value, or the default. */
 function positiveInt(value, fallback) {
   return Number.isInteger(value) && value > 0 ? value : fallback
+}
+
+/** The campaign persona section, for one assembly. Exported for direct testing. */
+export function personaSectionText(assemble, options) {
+  return personaSection(assemble, { ...DEFAULTS, ...options })
+}
+
+/** The DM notes context, for one assembly. Exported for direct testing. */
+export function notesContextText(assemble, options) {
+  return notesContext(assemble, { ...DEFAULTS, ...options })
 }
 
 /**
@@ -178,10 +190,16 @@ export function apply(ctx, config = {}) {
     text: (assemble) => personaSection(assemble, opts),
   }), 'dd35-prompt.persona()')
 
+  // The notes body changes whenever the DM writes to `dm_notes.md`, which can
+  // happen mid-turn — the same mid-batch snapshot churn the scene block had.
+  // Freeze both on the campaign turn so a turn emits at most one snapshot.
   ctx.effect(() => ctx.systemPrompt.context({
     name: 'dd35:dm-notes',
     order: opts.notesOrder,
-    text: (assemble) => notesContext(assemble, opts),
+    text: createTurnFrozenContext({
+      keyOf: campaignTurnKey,
+      render: (assemble) => notesContext(assemble, opts),
+    }),
   }), 'dd35-prompt.notes()')
 
   ctx.effect(() => () => { cache.clear() }, 'dd35-prompt.cache()')

@@ -382,20 +382,27 @@ await check('the repair is off when repairSpentBatch is false', async () => {
   )
 })
 
-await check('a refused continuation is repaired, and the notice names every cause', async () => {
+await check('a refused continuation is repaired, and the notice quotes Meridian', async () => {
   // The request no longer matches what Meridian delivered, so this continuation
   // is refused and would be refused again on every later turn. Committing the
   // notice is what ends that. Which of Meridian's causes moved is not knowable
-  // here, so the notice states all of them and asserts none.
+  // here, so the notice quotes what Meridian said, carries the status, and lists
+  // the causes without ranking them.
   state.mode = 'refuse'
   state.refuseDetail = REWRITE_DETAIL
   const chunks = await collect(runTurn(deps(), options(continuation())))
   const text = textOf(chunks)
   assert.match(text, /^\[Meridian Antigravity\]/, 'the turn must be closed by a notice, not an error')
   assert.match(text, /Meridian refused the continuation/)
-  assert.match(text, /no longer matches the request/)
-  assert.match(text, /tool-result pruner/)
-  assert.match(text, /model change applied while a tool batch was open/)
+  assert.match(text, /no longer matched the history it had already delivered/)
+  // Meridian's own words, not a paraphrase, and the status to go with them.
+  assert.match(text, /Meridian said: "/)
+  assert.match(text, /changed its delivered history or tool batch/)
+  assert.match(text, /status 409/)
+  // Causes are listed without one being chosen, and the pruner is not first.
+  assert.match(text, /rebuilt snapshot message \(the runtime context\)/)
+  assert.match(text, /a tool result pruned or compacted after delivery/)
+  assert.match(text, /a model change applied mid-batch/)
   assert.doesNotMatch(text, /the transcript changed/)
   assert.equal(chunks.at(-1).reason.kind, 'stop')
 })

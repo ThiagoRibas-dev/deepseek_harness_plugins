@@ -10,10 +10,12 @@ import { test } from 'node:test'
 
 import {
   QUOTA_FAILURE_CODE,
+  describeProviderError,
   isQuotaMessage,
   normalizeProviderStatus,
   parseResetWindow,
   quotaFailure,
+  quotaSurfaceEnabled,
 } from '../lib/quota.js'
 
 /** The exact text relayed by Meridian in session-293cca94. */
@@ -131,4 +133,68 @@ test('a response without the provider says so instead of reporting empty quota',
   assert.match(normalizeProviderStatus({ providers: [] }).error, /did not include/)
   assert.equal(normalizeProviderStatus({ providers: [{ id: 'claude' }] }).status, 'missing')
   assert.equal(normalizeProviderStatus(undefined).status, 'unavailable')
+})
+
+// ---- making the provider's own error readable ------------------------------
+
+/** The error Meridian returns for this account, verbatim from /providers/status. */
+const SCHEMA_REJECTION = '[\n  {\n    "expected": "string",\n    "code": "invalid_type",\n'
+  + '    "path": [\n      "command",\n      "data",\n      "groups",\n      1,\n      "buckets",\n'
+  + '      1,\n      "reset_time"\n    ],\n    "message": "Invalid input: expected string, received undefined"\n  }\n]'
+
+test('a schema rejection names the field and the mismatch', () => {
+  // It used to reach the strip raw, so the composer showed `Quota unavailable — [`
+  // and an indented blob. The array is structured; say what it says.
+  const described = describeProviderError(SCHEMA_REJECTION)
+  assert.match(described, /command\.data\.groups\[1\]\.buckets\[1\]\.reset_time/)
+  assert.match(described, /expected string, received undefined/)
+  assert.doesNotMatch(described, /\n/)
+  assert.ok(described.length < 400)
+})
+
+test('several issues are listed together', () => {
+  const described = describeProviderError(JSON.stringify([
+    { code: 'invalid_type', path: ['a', 0], message: 'expected string, received undefined' },
+    { code: 'too_small', path: ['b'], message: 'expected number >= 0' },
+  ]))
+  assert.match(described, /a\[0\] — expected string/)
+  assert.match(described, /b — expected number >= 0/)
+  assert.match(described, /; /)
+})
+
+test('an issue with no path, or no message, still reads', () => {
+  assert.match(describeProviderError(JSON.stringify([{ code: 'custom', message: 'the report was empty' }])), /the report was empty/u)
+  assert.match(describeProviderError(JSON.stringify([{ code: 'invalid_type', path: ['x'] }])), /x — invalid_type/u)
+})
+
+test('anything that is not a schema array is passed through', () => {
+  // Transport failures must read exactly as they did before.
+  assert.equal(describeProviderError('HTTP 500'), 'HTTP 500')
+  assert.equal(describeProviderError('  [not json'), '[not json')
+  assert.equal(describeProviderError('[]'), '[]')
+  assert.equal(describeProviderError('[1,2,3]'), '[1,2,3]')
+  assert.equal(describeProviderError(''), '')
+  assert.equal(describeProviderError(undefined), undefined)
+})
+
+test('a rejection reaches the snapshot readable, not raw', () => {
+  const snapshot = normalizeProviderStatus({
+    providers: [{ id: 'antigravity', status: 'unavailable', error: SCHEMA_REJECTION }],
+  })
+  assert.equal(snapshot.status, 'unavailable')
+  assert.match(snapshot.error, /^the usage report did not match the shape Meridian expects: command\./u)
+})
+
+// ---- the one switch --------------------------------------------------------
+
+test('only an explicit false turns the surface off', () => {
+  // Anything unset keeps the previous behaviour, so an older config does not
+  // silently lose the surface.
+  assert.equal(quotaSurfaceEnabled({ quotaEnabled: false }), false)
+  assert.equal(quotaSurfaceEnabled({ quotaEnabled: true }), true)
+  assert.equal(quotaSurfaceEnabled({}), true)
+  assert.equal(quotaSurfaceEnabled(undefined), true)
+  // A falsy non-boolean is not a deliberate disable.
+  assert.equal(quotaSurfaceEnabled({ quotaEnabled: 0 }), true)
+  assert.equal(quotaSurfaceEnabled({ quotaEnabled: '' }), true)
 })

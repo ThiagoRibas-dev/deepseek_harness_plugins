@@ -1,0 +1,39 @@
+# Bundle patch for @local/dsh-tool-result-policy.
+#
+# **No Host-plane service claim.** `toolResultPruner` is provided once per realm,
+# and every shipped preset mounts its own copy inside an isolated group
+# (`isolate: { toolResultPruner: true }`). A claim here would collide with
+# whichever realm already provides it: `service "toolResultPruner" has been
+# registered at <GuardedToolResultPruner>`, which is how this bundle first failed
+# to activate.
+#
+# This row therefore mounts two things that need no realm of their own:
+#
+#   1. the **strip pass**, on `agent/pre-step` — one mount, every preset, so a
+#      toggle in the settings page governs the preset it names. `pass.js` states
+#      why this replaced the service form.
+#   2. the **settings route**, behind `settings.plugins.tab`.
+#
+# The shipped host-plane pruner is deliberately left alone. Disabling it would
+# take pruning away from every preset — `standard`, `ptc`, `cordis` — which is a
+# regression, not a feature. Those presets keep whatever they mount today, and
+# the pass is additive on top.
+
+- insert:
+    - id: tool-result-policy
+      # Must be the bare package name, never a subpath like '…/plugin'. The web
+      # half is discovered by scanning Loader rows: `resolveMeta` accepts a row
+      # only when `exactPackageSpecifier(row.name)` resolves, and for a scoped
+      # name that helper accepts exactly two segments — so '…/plugin' returns
+      # undefined and the row is dropped before `dsh.client` is ever read, which
+      # is why the settings page never appeared. `exports["."]` is `./plugin.js`
+      # so this row mounts the pass and the route, and nothing else.
+      name: '@local/dsh-tool-result-policy'
+      config:
+        # The preset → boolean table. Absent means `defaults`, which means
+        # "do not strip", so a fresh install behaves exactly as before.
+        policyPath: !!js dshHomePath('tool-result-policy.json')
+        stripTransientResults: false
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024

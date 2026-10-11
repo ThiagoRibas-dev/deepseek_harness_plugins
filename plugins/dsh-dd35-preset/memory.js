@@ -19,7 +19,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
   bindWorkspaceFromSession, bounded, configure, loadState,
-  readActiveCampaign, requireCampaign, requireState, saveState,
+  resolveSessionCampaign, requireCampaign, requireState, saveState,
 } from './state-store.js'
 import {
   UNTITLED, clip, commitTurnToIndex, excerpt, firstMatchIndex, loadTranscripts,
@@ -230,7 +230,10 @@ function commitTurn(id, turn) {
 function capture(ctx, session, turn) {
   try {
     bindWorkspaceFromSession(session)
-    const id = readActiveCampaign()
+    // The campaign the session is playing, not the registry's last-used one: an
+    // unbound session records nothing rather than filing its turn under a
+    // campaign it never chose.
+    const id = resolveSessionCampaign().id
     if (!id) return
     const captured = captureFrom(session)
     if (!captured?.dm) return

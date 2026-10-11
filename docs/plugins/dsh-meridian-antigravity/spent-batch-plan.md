@@ -438,7 +438,7 @@ $ node --test tests/*.test.js
   opens with a `## Current State` block from three sessions ago, and everything in that
   file is re-injected as authoritative on every request.
 - **A branch is not a fresh session** — `fork` truncates history with no in-session
-  marker. Recorded in `docs/chat-controls-implementation-plan.md` Phase 7.
+  marker. Recorded in `docs/archive/chat-controls-implementation-plan.md` Phase 7.
 - **The restart was done on 2026-10-07 13:55.** It loaded the §5 dd35 notice guard and `dm_notes`
   guidance, the compaction-guard `preset-standard` override, and the refused-continuation repair.
   §9 is what is still owed after it, and what it already settled.

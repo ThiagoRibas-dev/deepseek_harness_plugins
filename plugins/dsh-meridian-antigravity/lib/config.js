@@ -148,6 +148,11 @@ export const Config = z.object({
   quotaEnabled: z.boolean().default(true).volatile(),
   /** Floor between quota reads; `0` reads on every trigger. */
   quotaRefreshMs: z.number().step(1).min(0).default(DEFAULT_QUOTA_REFRESH_MS).volatile(),
+  /**
+   * Token the browser half presents to the quota route. Empty mints one and keeps
+   * it under `$DSH_HOME`, so it survives a plugin reload.
+   */
+  quotaToken: z.string().default('').volatile(),
   defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW).volatile(),
   defaultMaxTokens: z.number().step(1).min(1).default(DEFAULT_MAX_TOKENS).volatile(),
   maxRequestBytes: z.number().step(1).min(1).default(DEFAULT_MAX_REQUEST_BYTES).volatile(),
@@ -160,7 +165,12 @@ export const Config = z.object({
   stripToolsForSessionTitle: z.boolean().default(true).volatile(),
   /** Injected user-role notice kinds the provider never sees; `[]` disables the filter. */
   ignoredNoticeKinds: z.array(z.string()).default([...DEFAULT_IGNORED_NOTICE_KINDS]).volatile(),
-  /** Send only the newest `runtime-context` snapshot instead of every superseded one. */
+  /**
+   * Kept for the notice filter, which still uses it to decide which superseded
+   * snapshots to drop and to restore. It no longer decides anything about the
+   * wire: no `runtime-context` snapshot is sent, current or superseded, because
+   * sending one moves the prefix Meridian pinned to a continuation.
+   */
   keepLatestRuntimeContext: z.boolean().default(true).volatile(),
   /**
    * Stand in for a reply the backend blocked after Meridian consumed the tool
@@ -266,6 +276,7 @@ export function resolveOptions(config, environment = process.env) {
     catalogueTtlMs: plain.catalogueTtlMs ?? DEFAULT_CATALOGUE_TTL_MS,
     quotaEnabled: plain.quotaEnabled ?? true,
     quotaRefreshMs: plain.quotaRefreshMs ?? DEFAULT_QUOTA_REFRESH_MS,
+    quotaToken: typeof plain.quotaToken === 'string' ? plain.quotaToken.trim() : '',
     defaultContextWindow: defaults.contextWindow,
     defaultMaxTokens: defaults.maxTokens,
     maxRequestBytes: plain.maxRequestBytes ?? DEFAULT_MAX_REQUEST_BYTES,

@@ -100,30 +100,30 @@ test('the persona section defers campaign facts to the notes file', () => {
 test('notes are named as the home for anything the DM must be reminded of', () => {
   const root = workspace({ campaign: 'c' })
   const text = mount().context.text(assembleAt(root))
-  assert.match(text, /anything you may need to be reminded of/)
-  assert.match(text, /House rules are the primary use/)
+  assert.match(text, /keep in mind for the future/)
+  assert.match(text, /Record house rules/)
   assert.match(text, /active quests/)
-  assert.match(text, /intent behind a plot arc/)
-  assert.match(text, /bring up several sessions from now/)
+  assert.match(text, /NPC secrets/)
+  assert.match(text, /plot arc plans/)
 })
 
 test('campaign truth is kept out of workspace-global files', () => {
   const root = workspace({ campaign: 'c' })
   const text = mount().context.text(assembleAt(root))
-  assert.match(text, /campaign-specific truth/)
+  assert.match(text, /Keep campaign notes in this file/)
   assert.match(text, /AGENTS\.md/)
 })
 
 test('the notes block forbids anything that changes turn to turn', () => {
   // Notes are re-injected on every request as authoritative, so a scene
-  // description copied into them is not merely redundant with `get_state` — it
-  // goes stale within a turn and is then read back as though still true.
+  // description copied into them is not merely redundant with the live state
+  // block — it goes stale within a turn and is then read back as though still
+  // true.
   const root = workspace({ campaign: 'c' })
   const text = mount().context.text(assembleAt(root))
-  assert.match(text, /Do not record anything that changes from turn to turn/)
-  assert.match(text, /current scene, party location, turn order, hit points, and conditions/)
-  assert.match(text, /retrieved fresh from get_state/)
-  assert.match(text, /remain true across multiple turns and sessions/)
+  assert.match(text, /Do not write down transient round-to-round state/)
+  assert.match(text, /current scene, party location, turn order, hit points, or conditions/)
+  assert.match(text, /the state block and `get_state` already return those/)
 })
 
 test('the notes block still explains the file when it does not exist', () => {
@@ -180,4 +180,24 @@ test('the persona section sits just after the persona prefix; notes come after p
 test('an empty persona file contributes nothing', () => {
   const root = workspace({ campaign: 'c', persona: '   \n\n' })
   assert.equal(mount().section.text(assembleAt(root)), '')
+})
+
+test('a mid-turn notes write does not produce a second snapshot', () => {
+  // Same reason as the scene block: the harness appends a new runtime-context
+  // message whenever the joined text changes, so a `write`/`edit` to dm_notes.md
+  // mid-turn would append one between a tool call and its result.
+  const root = workspace({ campaign: 'c', notes: 'House rule: crits confirm.' })
+  const { context } = mount()
+  const assemble = assembleAt(root)
+  const first = context.text(assemble)
+  assert.match(first, /crits confirm/)
+
+  writeFileSync(join(root, 'campaign', 'c', 'dm_notes.md'), 'House rule: crits confirm.\nKenna is a guard.')
+  assert.equal(context.text(assemble), first, 'the mid-turn write must not change the snapshot')
+
+  // The turn is captured: the next turn re-reads.
+  writeFileSync(join(root, 'campaign', 'c', 'state.json'), JSON.stringify({ last_turn: { number: 7 } }))
+  const next = context.text(assemble)
+  assert.notEqual(next, first)
+  assert.match(next, /Kenna is a guard\./)
 })

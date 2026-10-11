@@ -128,21 +128,51 @@ test('the blocked-reply notice reads correctly for one result and an unknown cou
   }
 })
 
-test('the refused-continuation notice names every cause and chooses none', () => {
-  // Meridian's 409 covers the delivered history, the tool batch and the model
-  // or execution controls, and the connector cannot see which moved. Asserting
-  // a rewrite would be a claim it cannot support.
-  const notice = rewrittenContinuationNotice(2)
+test('the refused-continuation notice quotes Meridian and ranks no cause', () => {
+  // Meridian's 409 covers the delivered history, the tool batch and the model or
+  // execution controls, and the connector cannot see which moved, so the notice
+  // must not assert one. It must not invent one either: the previous wording
+  // opened with the tool-result pruner, and a survey of the dd35 sessions found
+  // every conflict in a session whose runtime-context snapshot had been rebuilt,
+  // with the pruner count not predicting the outcome at all.
+  const notice = rewrittenContinuationNotice(2, {
+    provider: 'invalid_request_error: the conversation history has changed since this tool batch',
+    status: 409,
+    requestId: 'req_abc123',
+    moved: 'message 34 (user) changed, 3201 -> 3412 chars',
+  })
   assert.match(notice, /^\[Meridian Antigravity\] This turn's batch of 2 tool results was delivered/)
   assert.match(notice, /Meridian refused the continuation/)
-  assert.match(notice, /no longer matches the request/)
-  assert.match(notice, /rewritten after delivery/)
-  assert.match(notice, /tool-result pruner/)
-  assert.match(notice, /compaction between a tool call and its result/)
-  assert.match(notice, /model change applied while a tool batch was open/)
-  assert.match(notice, /closes the turn so the conversation can continue/)
-  // The claim the notice used to make, and must not make again.
+  assert.match(notice, /no longer matched the history it had already delivered/)
+  // The reason is Meridian's own words, and the request id is there to ask it more.
+  assert.match(notice, /Meridian said: "invalid_request_error: the conversation history has changed/)
+  assert.match(notice, /status 409, request req_abc123/)
+  // Causes are listed without one being chosen, and the pruner is not singled out.
+  assert.match(notice, /rebuilt snapshot message \(the runtime context\)/)
+  assert.match(notice, /a tool result pruned or compacted after delivery/)
+  assert.match(notice, /a model change applied mid-batch/)
+  // The one claim the capture diff can support.
+  assert.match(notice, /What moved: message 34 \(user\) changed, 3201 -> 3412 chars/)
+  assert.match(notice, /Re-issue your last instruction; the work above is intact/)
   assert.doesNotMatch(notice, /the transcript changed/)
+})
+
+test('the refused-continuation notice stands alone when nothing is known', () => {
+  // No provider text, no provenance and no capture diff: still a complete notice.
+  const notice = rewrittenContinuationNotice(1)
+  assert.match(notice, /batch of 1 tool result /)
+  assert.match(notice, /Meridian refused the continuation:/)
+  assert.doesNotMatch(notice, /Meridian said/)
+  assert.doesNotMatch(notice, /What moved/)
+})
+
+test('a provider message is collapsed to one bounded line', () => {
+  const notice = rewrittenContinuationNotice(1, {
+    provider: `line one\n\n  line   two ${'x'.repeat(600)}`,
+  })
+  assert.match(notice, /Meridian said: "line one line two x/)
+  // Capped so a verbose provider body cannot dominate the transcript.
+  assert.ok(notice.length < 1200, `notice too long: ${notice.length}`)
 })
 
 test('the refused-continuation notice reads correctly for one result and an unknown count', () => {

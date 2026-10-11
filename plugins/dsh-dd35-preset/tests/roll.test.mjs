@@ -199,8 +199,13 @@ test('the retired tool names are gone and the merged ones are present', async ()
   assert.equal(mechanics.has('roll_check'), true)
   assert.equal(mechanics.has('roll_attack'), true)
 
+  // The oracle/generator tools moved to `oracles.js`, where they are covered by
+  // `oracles.test.mjs`. What remains here is the generic dice engine, plus the
+  // old monster-behaviour tool, which `ask_oracle`'s presets replace.
   const oracle = await toolsOf('tools.js')
   assert.equal(oracle.has('get_monster_ai'), false)
-  assert.equal(oracle.has('roll_monster_behavior'), true)
-  assert.equal(oracle.has('roll_dice'), true)
+  assert.equal(oracle.has('roll_monster_behavior'), false, 'replaced by ask_oracle presets')
+  assert.equal(oracle.has('roll_solo_oracle'), false, 'replaced by ask_oracle preset "solo"')
+  assert.equal(oracle.has('draw_keyword'), false, 'folded into consult_oracle')
+  assert.equal(oracle.has('roll_dice'), true, 'the generic roll is not replaced by anything')
 })

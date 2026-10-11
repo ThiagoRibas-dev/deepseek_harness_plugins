@@ -43,16 +43,16 @@ harness process, so restart DSH after changing any of it.
 ## Notes
 
 - `dsh-dd35-preset` resolves `campaign/`, `rules/` and `compendium/` under the **session workspace**
-  (`session.header.cwd`) — the folder the user opened — never under the bundle. A `workspace` config
+  (`session.header.cwd`) — the folder the user opened — rather than under the bundle. A `workspace` config
   value on one of its plugins pins a fixed root instead.
 - `dsh-dd35-preset` reads two optional files from the **active campaign** directory on every request
   (`prompt.js`): `dm_persona.md` joins the system prompt as a section directly after the persona
   prefix, and `dm_notes.md` — the DM's durable scratchpad, which the DM maintains with the ordinary
-  `read`/`write`/`edit` tools — arrives as a runtime-context snapshot instead, so writing notes never
-  invalidates the cached system-prompt prefix. Both are per-campaign, so `set_active_campaign`
+  `read`/`write`/`edit` tools — arrives as a runtime-context snapshot instead, so writing notes does not
+  invalidate the cached system-prompt prefix. Both are per-campaign, so `set_active_campaign`
   switches them, and neither needs a harness restart. The split is deliberate: `dm_persona.md` carries
   voice and presentation, while `dm_notes.md` is the home for campaign-specific truth — house rules,
-  rulings already given, and in-play facts — which must not live in `AGENTS.md` or another
+  rulings already given, and in-play facts — which should be kept separate from `AGENTS.md` or another
   workspace-global file, since those are shared by every campaign in the folder. Covered by
   `tests/prompt.test.mjs`.
 - `plugins/dsh-tts` carries no remote of its own in this repository. Its earlier standalone git

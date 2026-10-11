@@ -62,6 +62,55 @@ function oneLine(value) {
   return String(value).replace(/\s*\n\s*/gu, ' ').trim()
 }
 
+/**
+ * Index of the heading's own line, searching from the end.
+ *
+ * The **last** occurrence is the real section start, because a real transcript's
+ * prose can quote a heading (turn 1 opens with `## User Prompt` before the actual
+ * sections) but cannot contain one after the section has begun.
+ */
+function lastHeadingIndex(text, heading) {
+  const pattern = new RegExp(`^##\\s*${heading}\\s*$`, 'gm')
+  let index = -1
+  let end = -1
+  for (const match of text.matchAll(pattern)) {
+    index = match.index
+    end = match.index + match[0].length
+  }
+  return index === -1 ? null : { index, end }
+}
+
+
+/**
+ * The player's and the DM's sections.
+ *
+ * Anchored on the **section order** (`## Player` then `## DM`) rather than by
+ * counting level-2 headings, because a player message may itself contain `## `
+ * markdown — a plan, a contingency, a quoted rule — and a heading count cannot
+ * tell that apart from a real boundary.
+ *
+ * The DM section deliberately runs to the **end of file** and is not bounded by
+ * a following heading. A turn routinely ends with the DM's own `###` subsection
+ * (turn 142 closes on `### 📍 Current Situation`), so treating a later heading as
+ * a boundary would throw away the very prose this parser exists to preserve.
+ *
+ * Known limit: a player message that itself contains a line reading `## DM` is
+ * indistinguishable from the real heading. That is inherent to a markdown
+ * transcript and is not worth a sentinel to fix.
+ */
+function bodies(text) {
+  const player = lastHeadingIndex(text, 'Player')
+  if (player === null) return { player: null, dm: null }
+  const dm = lastHeadingIndex(text, 'DM')
+  // The player's body runs to the DM heading itself — not to the next heading of
+  // any kind, because the player's own message may contain `## ` markdown.
+  const playerEnd = dm === null || dm.index < player.end ? text.length : dm.index
+  return {
+    player: text.slice(player.end, playerEnd).trim(),
+    dm: dm === null ? null : text.slice(dm.end).trim(),
+  }
+}
+
 /** Parse one transcript file into its header fields and its two messages. */
 export function parseTranscript(text, number) {
   const titleMatch = text.match(/^#\s*Turn\s+\d+\s*[—–-]\s*(.+)$/m)
@@ -70,9 +119,8 @@ export function parseTranscript(text, number) {
   const entitiesMatch = text.match(/^-\s*Entities:\s*(.+)$/m)
   const microMatch = text.match(/^-\s*Micro-State:\s*(.+)$/m)
   const pendingMatch = text.match(/^-\s*Pending Action:\s*(.+)$/m)
-  const playerMatch = text.match(/^##\s*Player\s*\n([\s\S]*?)(?=\n##\s|$)/m)
-  const dmMatch = text.match(/^##\s*DM\s*\n([\s\S]*?)$/m)
   const clean = (value) => (value === undefined ? undefined : value.trim())
+  const { player, dm } = bodies(text)
   return {
     number,
     title: clean(titleMatch?.[1]) || UNTITLED,
@@ -83,20 +131,26 @@ export function parseTranscript(text, number) {
       : entitiesMatch[1].split(',').map((name) => name.trim()).filter((name) => name.length > 0),
     microState: clean(microMatch?.[1]) ?? null,
     pendingAction: clean(pendingMatch?.[1]) ?? null,
-    player: clean(playerMatch?.[1]) ?? '',
-    dm: clean(dmMatch?.[1]) ?? '',
+    player: player ?? '',
+    dm: dm ?? '',
   }
 }
 
-/** Transcript file names in turn order. Turn numbers come from the name, not the position. */
-export function transcriptFiles(id) {
-  const dir = transcriptsDir(id)
+/** Transcript file names in turn order, against an explicit root. */
+export function transcriptFilesIn(root, id) {
+  if (typeof root !== 'string' || root.length === 0) return []
+  const dir = join(root, 'campaign', id, 'events', 'transcripts')
   if (!existsSync(dir)) return []
   return readdirSync(dir)
     .map((file) => ({ file, match: file.match(/^(\d+)/) }))
     .filter((entry) => entry.match)
     .map((entry) => ({ file: entry.file, number: Number.parseInt(entry.match[1], 10) }))
     .sort((a, b) => a.number - b.number)
+}
+
+/** Transcript file names in turn order. Turn numbers come from the name, not the position. */
+export function transcriptFiles(id) {
+  return transcriptFilesIn(workspace(), id)
 }
 
 /**
@@ -124,34 +178,91 @@ export function messagesOf(turn) {
 }
 
 /**
- * Parsed transcripts plus a flat, message-level view of them.
+ * Parsed transcripts plus a flat, message-level view of them, against an
+ * **explicit root**.
  *
  * Cached by workspace, directory mtime and file mtime so a tool call does not
  * re-read the whole campaign, and invalidated the moment a transcript is
  * written. The workspace is part of the key because two sessions can share a
  * campaign id in different folders.
+ *
+ * The root is a parameter rather than the bound {@link workspace} because prompt
+ * assembly also reads transcripts — for the known-cast recency map — and assembly
+ * runs before any tool call has bound a workspace.
  */
 let cache = { root: null, id: null, stamp: '', turns: [], messages: [] }
 
-function dirStamp(id) {
-  const dir = transcriptsDir(id)
+function dirStampIn(root, id) {
+  const dir = join(root, 'campaign', id, 'events', 'transcripts')
   if (!existsSync(dir)) return 'absent'
   return readdirSync(dir).sort()
     .map((file) => `${file}:${statSync(join(dir, file)).mtimeMs}:${statSync(join(dir, file)).size}`)
     .join('|')
 }
 
-export function loadTranscripts(id) {
-  const root = workspace()
-  const stamp = dirStamp(id)
+export function loadTranscriptsIn(root, id) {
+  if (typeof root !== 'string' || root.length === 0) return { turns: [], messages: [] }
+  const stamp = dirStampIn(root, id)
   if (cache.root === root && cache.id === id && cache.stamp === stamp) return cache
-  const dir = transcriptsDir(id)
-  const turns = transcriptFiles(id).map(({ file, number }) =>
+  const dir = join(root, 'campaign', id, 'events', 'transcripts')
+  const turns = transcriptFilesIn(root, id).map(({ file, number }) =>
     parseTranscript(readFileSync(join(dir, file), 'utf8'), number))
   const messages = []
   for (const turn of turns) messages.push(...messagesOf(turn))
   cache = { root, id, stamp, turns, messages }
   return cache
+}
+
+export function loadTranscripts(id) {
+  return loadTranscriptsIn(workspace(), id)
+}
+
+const escapeRe = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/**
+ * How recently each named actor appears in the campaign's own text.
+ *
+ * This is the derived half of the cast-tier decision (spec §11.5). A sheet's id
+ * is almost never what the prose uses — searching `events/transcripts` for
+ * `dire_wolf_1` finds nothing while "Dire Wolf (Alpha Pair, male)" occurs in five
+ * turns — so a candidate is matched on its id *and* its display name, with any
+ * parenthetical qualifier stripped (`Gareth (Watch Sergeant…)` → `Gareth`).
+ *
+ * Cheap enough to run per prompt assembly: the parsed transcripts are already
+ * cached on directory stamp, so this is one regex pass over in-memory text.
+ *
+ * @param root - explicit workspace root, because prompt assembly runs unbound.
+ * @param id - campaign identifier.
+ * @param candidates - `[{ id, name }]`, typically the campaign's actor sheets.
+ * @returns a Map of candidate id → `{ lastTurn, turns }`.
+ */
+export function lastSeenByActor(root, id, candidates) {
+  const out = new Map()
+  const list = Array.isArray(candidates) ? candidates : []
+  if (list.length === 0) return out
+  const { turns } = loadTranscriptsIn(root, id)
+  if (turns.length === 0) return out
+
+  for (const candidate of list) {
+    const needles = [candidate.id, String(candidate.name ?? '').split(' (')[0].trim()]
+      .filter((needle) => typeof needle === 'string' && needle.length > 2)
+      .map(escapeRe)
+    if (needles.length === 0) {
+      out.set(candidate.id, { lastTurn: null, turns: 0 })
+      continue
+    }
+    const pattern = new RegExp(`\\b(?:${needles.join('|')})\\b`, 'i')
+    let lastTurn = null
+    let count = 0
+    for (const turn of turns) {
+      if (pattern.test(`${turn.player}\n${turn.dm}`)) {
+        lastTurn = turn.number
+        count += 1
+      }
+    }
+    out.set(candidate.id, { lastTurn, turns: count })
+  }
+  return out
 }
 
 /** Drop the parse cache — called on plugin reload so a stale workspace is never served. */

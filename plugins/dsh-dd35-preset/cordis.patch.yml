@@ -75,36 +75,23 @@
                 Incarnum: (from Magic of Incarnum). A system of soul-stuff where users shape raw Incarnum into Soulmelds (magic items) and power them by investing Essentia.
                 Shadowcasting: (from Tome of Magic). Shadowcasters use Mysteries (spells) with a unique preparation and recovery mechanic based on the ambient light level.
                 ```
-                Turn Memory
-                The verbatim transcript, the campaign log entry, and the scene index are automatically recorded. Since the transcript's title, location, and clock are read from `state.json` when the turn closes, you only need to use `update_scene` to manage memory state.
-                You can read the transcript of the session using these tools:
+                Available Toolsets
+                You have access to a comprehensive suite of tools to manage the campaign, run mechanics, and generate ideas. Reach for these toolsets whenever you need to resolve an action or recall information:
                 
-                | Tool            | Use |
-                |-----------------|-----|
-                | `list_memories` | The scene index: turn count, in-game date span, and which turn ranges belong to which scene. Call it with no arguments to see what is available to search. |
-                | `grep_memories` | Ranked snippets with stable IDs. Bare terms AND together, `"quoted phrases"` match exactly, `/regex/` for pattern matching, `-term` to exclude. Bound with `from_turn` / `to_turn`. |
-                | `fetch_memories`| The full text of the IDs you selected, plus the turns on either side. |
-                Use these tools **before** you invent a detail. An NPC’s name, a promise made twenty turns ago, the exact wording of a threat, a wound that never healed — all of it is searchable. `list_memories` will tell you which turn range to look in so that you don't have to guess continuity. Keep dm_notes.md up to date with details and reminders for yourself.
-                Oracles and Random Tables
-                In solo play, you don't have to decide everything. When something hasn't been established or isn't clearly decided, roll for it.
-                The oracle exists to create surprises and new directions and hooks — and those surprises are the heart of the game.
-                Use the tools below whenever the situation calls for uncertainty or inspiration:
-                | Tool | Use it when |
-                |---|---|
-                | `roll_solo_oracle` | You need to resolve yes/no questions. Use `likelihood_modifier` when appropriate. Treat a natural 1 or 20 as an interrupt. |
-                | `draw_muse_prompt` | A scene feels stuck and you need a fresh direction or inspiration. |
-                | `generate_plot_hook` | You need a new thread — a job, rumor, complication, or twist. |
-                | `generate_npc` | You need an NPC on the spot (a face, motive, or name). |
-                | `explore_dungeon_room` | The party enters a new room or area inside a dungeon. |
-                | `explore_hex` | The party moves into a new hex of wilderness. |
-                | `draw_focus` | A scene needs a strong starting point (`Action`, `Detail`, or `Topic`). |
-                | `draw_keyword` | You want one concrete detail or omen to anchor a description. |
-                | `roll_monster_behavior` | A fight begins (`tactic`) or at the end of each round / when the situation shifts (`reaction`). |
-                | `roll_dice` | The generic roll: an XdY pool, damage, a random table, an ad-hoc ruling. It takes `keep_highest`/`drop_lowest`, a `modifier`, and an optional `dc`. Reach for it when no more specific roll fits. |
-                | `roll_check` | Every saving throw, skill check, ability check, and opposed contest. Name it with `kind` ("Reflex save", "Spot", "Move Silently"); pass `opponent` for an opposed check instead of a DC. |
-                | `roll_attack` | Every attack roll. It confirms critical threats, rolls the damage dice, and with `apply: true` writes the damage and the resulting 3.5e status straight to the target's sheet. |
-                Feel free to make frequent use of these tools as sources of inspiration and creativity during play rather than treating them as a last resort.
-                If too many turns goes by without using any of them, you probably decided too much yourself.
+                **Reference & Compendium:** Look up SRD rules, spell descriptions, monster statblocks, and class features before inventing mechanics or assuming how a spell works. [`lookup_rule`, `get_monster`, `get_spell`, `get_class`, `search_reference`, `list_reference_categories`]
+                **Turn Memory:** Search past turns, recall exact dialogue, or check what happened in previous scenes. The verbatim transcript and scene index are automatically recorded. Always search memories before inventing a detail about past events. [`grep_memories`, `fetch_memories`, `list_memories`]
+                **Combat & Mechanics:** Manage initiative order, track turns, apply damage and conditions, and roll checks/attacks/saves. Let the tools handle the math and sheet updates. Includes skill checks, ability checks, saves, and opposed contests. [`roll_check`, `roll_attack`, `init_combat`, `next_turn`, `next_round`, `adjust_initiative`, `end_combat`, `apply_damage`, `heal`, `apply_condition`, `remove_condition`, `tick_conditions`, `add_combatant`, `remove_combatant`]
+                **State & Entities:** Manage the current scene, create or update character sheets and NPCs, and manage the active campaign state. Keep the scene and entity states accurate. [`get_state`, `set_mode`, `update_scene`, `route_turn`, `create_campaign`, `create_entity`, `list_campaigns`, `set_active_campaign`, `detach_campaign`, `get_entity`, `update_entity`]
+                **Oracles & Dice:** Use these whenever the situation calls for uncertainty or inspiration. The generic dice roller handles standard rolls, while the oracles provide traits, encounters, or answer questions. [`roll_dice`, `ask_oracle`, `consult_oracle`]
+                
+                Oracles and Inspiration
+                In solo play, you don't have to decide everything. When something hasn't been established or isn't clearly decided, roll for it. The oracle exists to create surprises and new directions and hooks — and those surprises are the heart of the game.
+                
+                Please consistently use the oracle tools (`ask_oracle` and `consult_oracle`) as your primary sources of inspiration and creativity during play, rather than treating them as a last resort.
+                If too many turns go by without using either `ask_oracle` or `consult_oracle`, you have likely decided too much yourself.
+
+                Adjudicating Rules and Reality
+                Use the D&D 3.5e rules to simulate reality and adjudicate success or failure. Most actions that have a chance of failure—even just convincing a person, searching a room, or recalling lore—should be decided by a dice roll against a DC. Avoid deciding the outcome of uncertain actions by fiat; instead, ask for a skill check, ability check, or saving throw using the `roll_check` tool.
               suffix: Your working directory is {{cwd}}.
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
@@ -116,9 +103,19 @@
             name: '@deepseek-ai/dsh-tool-skill'
           - id: dd35-tools
             name: 'file:///export/DownloadsSSD/SHARED/harnesses/dsh/plugins/dsh-dd35-preset/tools.js'
+          # The oracles (FI-18/FI-19): `ask_oracle` for one random choice from the
+          # DM's own options or a canonical preset, `consult_oracle` for several
+          # independent inspiration vectors or one coherent whole row. The shared
+          # table read path lives in `tables.js`.
+          - id: dd35-oracles
+            name: 'file:///export/DownloadsSSD/SHARED/harnesses/dsh/plugins/dsh-dd35-preset/oracles.js'
+          # Name generators: `generate_character_name` and `generate_place_name`
+          # backed by compiled static datasets from 12 reference corpora.
+          - id: dd35-names
+            name: 'file:///export/DownloadsSSD/SHARED/harnesses/dsh/plugins/dsh-dd35-preset/names.js'
           # These four resolve `campaign/`, `rules/` and `compendium/` under the
           # session's workspace (`session.header.cwd`) — the folder the user
-          # opened — and never under this bundle. Set `workspace` in one entry's
+          # opened — rather than under this bundle. Set `workspace` in one entry's
           # config to pin a fixed root instead.
           - id: dd35-state
             name: 'file:///export/DownloadsSSD/SHARED/harnesses/dsh/plugins/dsh-dd35-preset/state.js'
@@ -128,17 +125,49 @@
             name: 'file:///export/DownloadsSSD/SHARED/harnesses/dsh/plugins/dsh-dd35-preset/mechanics.js'
           - id: dd35-reference
             name: 'file:///export/DownloadsSSD/SHARED/harnesses/dsh/plugins/dsh-dd35-preset/reference.js'
+          # Read-only campaign diagnostic (`dd35_doctor`). Reports authoring debt
+          # the files cannot report themselves: scene entities with no sheet,
+          # unresolved provisional stubs, an id duplicated in player/ and actors/,
+          # sheets left at defaultEntity's defaults, transcripts the parser cannot
+          # read, and timed conditions with no combat running. It does not write —
+          # see the module header for why that is load-bearing.
+          - id: dd35-doctor
+            name: 'file:///export/DownloadsSSD/SHARED/harnesses/dsh/plugins/dsh-dd35-preset/doctor.js'
+          # Contextual records (`dd35_context_index`): who was present per turn,
+          # where, when, and what happened — derived by exact matching over the
+          # transcripts and the entity roster. No model call, so it is free to
+          # run. The trigger fires when an NPC returns after an absence or the
+          # party changes location, surfacing earlier turns with the reason each
+          # one was retrieved. See docs/dd35-memory-model-improvement.md §12.
+          - id: dd35-context-index
+            name: 'file:///export/DownloadsSSD/SHARED/harnesses/dsh/plugins/dsh-dd35-preset/context-index.js'
           # Optional campaign files, read from the ACTIVE CAMPAIGN directory on
           # every request (`campaign/<id>/dm_persona.md`, `campaign/<id>/dm_notes.md`)
           # so switching campaigns or editing a file needs no restart.
           # `dm_persona.md` extends the persona above as a system-prompt section;
           # `dm_notes.md` arrives as a runtime-context snapshot instead, so the
-          # DM writing notes never invalidates the cached system-prompt prefix.
+          # DM writing notes does not invalidate the cached system-prompt prefix.
           - id: dd35-prompt
             name: 'file:///export/DownloadsSSD/SHARED/harnesses/dsh/plugins/dsh-dd35-preset/prompt.js'
             config:
               personaMaxBytes: 32768
               notesMaxBytes: 16384
+          # Passive scene and cast state (runtime snapshot) plus the player's own
+          # character prose (a cached system-prompt section). The snapshot is
+          # registered AFTER dm-notes (order 300 vs 200) so the joined snapshot
+          # ends with the volatile part and a byte cap truncates the least useful
+          # content first. This is the passive half of the recall fix: measured
+          # over 88 sessions, half of all tool traffic was filesystem work,
+          # because nothing handed the DM its own state back.
+          - id: dd35-scene-state
+            name: 'file:///export/DownloadsSSD/SHARED/harnesses/dsh/plugins/dsh-dd35-preset/scene-state.js'
+            config:
+              sceneStateMaxBytes: 6144
+              # The three player files total 23.3 KB on seventh_moon. Generous
+              # here so a normal campaign does not get truncated mid-file; lower
+              # it if the cached prefix cost matters more than the reads.
+              playerFilesMaxBytes: 24576
+              playerFileMaxBytes: 12288
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'
           - id: tool-fs-search
@@ -172,12 +201,18 @@
               - id: command-compact
                 name: '@deepseek-ai/dsh-command-compact'
               - id: tool-result-pruner
+                # Truncation safety net at compaction, unchanged from before the
+                # retention work. **Stripping is not mounted here** — it runs as a
+                # Host-plane pass in `dsh-tool-result-policy/plugin.js`, because a
+                # pruner mounted in this isolated group governs only `dd35` and
+                # leaves the settings page's other preset toggles inert. See
+                # `plugins/dsh-tool-result-policy/pass.js`.
                 name: 'file:///export/DownloadsSSD/SHARED/harnesses/dsh/plugins/dsh-compaction-guard/pruner.js'
                 config:
                   thresholdChars: 8192
                   headChars: 4096
                   tailChars: 1024
-                  # Do not rewrite the surface mid-turn on a provider that pins
+                  # Please avoid rewriting the surface mid-turn on a provider that pins
                   # a tool continuation to the history it already delivered.
                   deferWhenBatchPending: true
                   contractProviders:

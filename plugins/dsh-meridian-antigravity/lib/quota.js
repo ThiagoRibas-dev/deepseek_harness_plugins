@@ -29,6 +29,25 @@
  */
 export const QUOTA_FAILURE_CODE = 'QUOTA'
 
+/**
+ * Whether the quota surface should mount at all.
+ *
+ * One switch for all of it: the route, the document injection and the two refresh
+ * triggers. It previously gated only the refresh, so turning it off left the route
+ * mounted and `window.__DSH_MERIDIAN__` injected — the composer strip still
+ * rendered, now with nothing refreshing it, which reads as stale quota rather than
+ * as a disabled feature.
+ *
+ * Only an explicit `false` disables it, so an unset field or an older config keeps
+ * the previous behaviour.
+ *
+ * @param options - resolved plugin options.
+ * @returns whether to mount the route, inject the token and poll.
+ */
+export function quotaSurfaceEnabled(options) {
+  return options?.quotaEnabled !== false
+}
+
 /** The provider id Meridian uses for the Antigravity backend. */
 export const ANTIGRAVITY_PROVIDER_ID = 'antigravity'
 
@@ -150,7 +169,8 @@ export function normalizeProviderStatus(payload, options = {}) {
     }
   }
 
-  const error = firstText(entry.error, ...accountError)
+  const rawError = firstText(entry.error, ...accountError)
+  const error = rawError === undefined ? undefined : describeProviderError(rawError)
   const activity = normalizeActivity(entry.activity)
   return {
     status: windows.length > 0 ? 'ready' : (firstText(entry.status) ?? 'unknown'),
@@ -159,4 +179,55 @@ export function normalizeProviderStatus(payload, options = {}) {
     ...activity === undefined ? {} : { activity },
     fetchedAt: now,
   }
+}
+
+/** `["a","b",1,"c"]` renders as `a.b[1].c`. */
+function renderPath(path) {
+  let out = ''
+  for (const segment of path) {
+    if (typeof segment === 'number') out += `[${segment}]`
+    else out += out === '' ? String(segment) : `.${String(segment)}`
+  }
+  return out
+}
+
+/**
+ * A provider error, made readable.
+ *
+ * When Meridian rejects a usage report it returns the schema issues as a JSON
+ * array, and the strip printed that raw — `Quota unavailable — [` followed by an
+ * indented blob that named nothing the reader could act on. The array is
+ * structured, so say what it says: which field failed, and how.
+ *
+ * Anything that is not such an array is returned trimmed and otherwise unchanged,
+ * so a transport failure still reads as it did.
+ *
+ * @param raw - `entry.error` from the status payload, or any transport message.
+ * @returns one line, or the input when it cannot be improved on.
+ */
+export function describeProviderError(raw) {
+  if (typeof raw !== 'string' || raw.length === 0) return raw
+  const trimmed = raw.trim()
+  if (!trimmed.startsWith('[')) return trimmed
+
+  let issues
+  try {
+    issues = JSON.parse(trimmed)
+  } catch {
+    // Not JSON after all; the raw text is all there is.
+    return trimmed
+  }
+  if (!Array.isArray(issues) || issues.length === 0) return trimmed
+
+  const described = []
+  for (const issue of issues) {
+    if (issue === null || typeof issue !== 'object') continue
+    const where = Array.isArray(issue.path) ? renderPath(issue.path) : ''
+    const message = typeof issue.message === 'string' && issue.message.length > 0
+      ? issue.message
+      : (typeof issue.code === 'string' ? issue.code : 'invalid')
+    described.push(where === '' ? message : `${where} — ${message}`)
+  }
+  if (described.length === 0) return trimmed
+  return `the usage report did not match the shape Meridian expects: ${described.join('; ')}`.slice(0, 400)
 }

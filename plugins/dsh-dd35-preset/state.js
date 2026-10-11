@@ -12,18 +12,24 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
-  actorsDir, bounded, campaignDir, campaignRoot, configure, defaultEntity,
-  defaultState, ensureDir, listCampaignIds, loadAnyEntity, loadEntities,
-  loadSceneEntities, loadState, patchEntity, playerDir, readActiveCampaign,
+  actorsDir, bindSessionCampaign, bounded, briefEntity, campaignDir, campaignRoot, configure,
+  defaultEntity, defaultState, ensureDir, listCampaignIds, loadAnyEntity, loadEntities,
+  loadSceneEntities, loadState, patchEntity, playerDir, resolveSessionCampaign,
   readText, registryPath, requireCampaign, requireState, saveEntity, saveState,
-  statePath, transcriptsDir, writeRegistry,
+  setSessionLookup, statePath, transcriptsDir, unbindSessionCampaign, writeRegistry,
 } from './state-store.js'
 
 /** Register a tool whose campaign paths bind to the calling session's workspace. */
 const define = (tool) => defineTool({ ...tool, execute: bounded(tool.execute) })
 
 export const name = 'dd35-state'
-export const inject = ['tools']
+/**
+ * `sessions` is here for one reason: a fork records only its immediate parent, so
+ * following a chain of forks needs `sessions.get` to reach the ancestors' own
+ * `parentSession`. `dsh-compaction-guard`'s engine already injects the same
+ * service inside this preset, so it is present in this scope.
+ */
+export const inject = ['tools', 'sessions']
 
 const MODE_CONSTRAINTS = {
   encounter:
@@ -40,18 +46,6 @@ const MODE_CONSTRAINTS = {
 
 const text = (value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }]
 
-const briefEntity = (entity) => ({
-  id: entity.id,
-  name: entity.name,
-  kind: entity.kind,
-  hp: entity.hp,
-  max_hp: entity.max_hp,
-  temp_hp: entity.temp_hp ?? 0,
-  ac: entity.ac,
-  ...(entity.position ? { position: entity.position } : {}),
-  conditions: (entity.conditions ?? []).map((cond) => (typeof cond === 'string' ? cond : cond.name)),
-})
-
 /** Compact, model-facing projection of session state plus its entities. */
 function compact(id, state) {
   const present = loadSceneEntities(id, state)
@@ -66,13 +60,17 @@ function compact(id, state) {
       delayed: state.initiative?.delayed ?? [],
     },
     scene: state.scene,
-    party: loadEntities(id, 'pc').map(briefEntity),
-    present: present.filter((entity) => entity.kind !== 'pc').map(briefEntity),
+    party: loadEntities(id, 'pc').map((entity) => briefEntity(entity)),
+    present: present.filter((entity) => entity.kind !== 'pc').map((entity) => briefEntity(entity)),
   }
 }
 
 export function apply(ctx, config = {}) {
   configure(config)
+
+  // Lets the resolver walk a chain of forks. Shared module instance, so wiring it
+  // here also covers dd35-prompt and dd35-scene-state, which mount later.
+  setSessionLookup((id) => ctx.sessions.get(id))
 
   ctx.tools.register(define({
     name: 'get_state',
@@ -145,26 +143,61 @@ export function apply(ctx, config = {}) {
   ctx.tools.register(define({
     name: 'route_turn',
     description:
-      'Decide how to open this turn. Returns the phase to run: "session_zero" (no campaign exists yet), '
-      + '"fresh_session" (first message of a session — recap prior events from the log first), or "gameplay" '
-      + '(the normal loop in the returned mode). Call this on the first message of a session.',
+      'Decide how to open this turn. Returns the phase to run: "session_zero" (no campaign exists in this '
+      + 'workspace yet), "choose_campaign" (campaigns exist but none is attached to this session — ask the '
+      + 'player whether to start a new one or continue an existing one), "fresh_session" (first message of a '
+      + 'session that has a campaign — recap prior events from the log first), or "gameplay" (the normal loop '
+      + 'in the returned mode). Call this on the first message of a session.',
     parameters: {
       first_message: { type: 'boolean', description: 'True when this is the first message of a new session.' },
     },
     output: { schema: { type: 'json' }, render: (_a, v) => text(v) },
     execute({ first_message = false }) {
-      const active = readActiveCampaign()
-      if (!active) return { phase: 'session_zero', campaign: null, reason: 'no active campaign in the registry' }
-      const state = loadState(active)
+      const resolved = resolveSessionCampaign()
+      if (resolved.id === null) {
+        const campaigns = (() => { try { return listCampaignIds() } catch { return [] } })()
+        if (campaigns.length === 0) {
+          return {
+            phase: 'session_zero',
+            campaign: null,
+            campaigns: [],
+            reason: 'no campaign exists in this workspace yet',
+            hint: 'Load the `dd35-session-zero` skill and build a campaign with the player.',
+          }
+        }
+        return {
+          phase: 'choose_campaign',
+          campaign: null,
+          campaigns,
+          reason: 'this session has no campaign attached',
+          hint: 'Load the `dd35-campaign-choice` skill: greet the player, then ask whether to start a new '
+            + 'campaign or continue one of these. A new one is `create_campaign`; continuing an existing one '
+            + 'is `set_active_campaign`.',
+        }
+      }
+
+      // Pin anything that was not an explicit choice, so the resolution stops
+      // depending on something outside this session.
+      //
+      //   `legacy`    — a later change to the registry must not move a live session.
+      //   `inherited` — a fork of a fork has no entry of its own, and pinning the
+      //                 middle link is what lets the chain resolve past it even
+      //                 once an ancestor is gone.
+      if (resolved.source !== 'bound') {
+        try { bindSessionCampaign(resolved.id) } catch { /* pinning is best-effort */ }
+      }
+
+      const state = loadState(resolved.id)
       const phase = first_message ? 'fresh_session' : 'gameplay'
       return {
         phase,
-        campaign: active,
+        campaign: resolved.id,
+        campaign_source: resolved.source,
         mode: state?.mode ?? 'exploration',
         scene: state?.scene ?? null,
         hint: phase === 'fresh_session'
-          ? 'Recap prior events with list_memories, then fetch_memories for the turns you need.'
-          : 'Resync with get_state, then run the gameplay loop.',
+          ? 'Load the `dd35-fresh-session` skill: recap prior events with list_memories, then fetch_memories for the turns you need.'
+          : 'Load the `dd35-gameplay-loop` skill: resync with get_state, then run the loop.',
       }
     },
   }))
@@ -193,7 +226,10 @@ export function apply(ctx, config = {}) {
         saveEntity(id, member.id, 'pc', defaultEntity(member.id, { ...member, kind: 'pc' }))
       }
       writeRegistry({ active: id, title: name, setting: setting ?? null })
-      return { campaign: id, state: statePath(id), registry: registryPath(), party: party.map((member) => member.id) }
+      // A campaign created in a session belongs to that session. Best-effort: a
+      // standalone call with no session still creates the campaign.
+      const attached = (() => { try { return bindSessionCampaign(id) } catch { return false } })()
+      return { campaign: id, attached, state: statePath(id), registry: registryPath(), party: party.map((member) => member.id) }
     },
   }))
 
@@ -201,7 +237,7 @@ export function apply(ctx, config = {}) {
     name: 'create_entity',
     description:
       'Create a structured entity sheet (character or NPC). Use for new PCs, NPCs, cohorts, familiars, and monsters '
-      + 'that need tracked HP/AC/conditions.',
+      + 'that need tracked HP/AC/conditions. For a walk-on extra, `update_scene` with create_provisional is lighter.',
     parameters: {
       entity_id: { type: 'string', required: true, description: 'Entity id, e.g. thiago or goblin_1.' },
       kind: { type: 'string', enum: ['pc', 'npc'], description: 'pc (player/) or npc (actors/). Defaults to npc.' },
@@ -209,14 +245,15 @@ export function apply(ctx, config = {}) {
       hp: { type: 'integer', description: 'Current/max hit points.' },
       ac: { type: 'integer', description: 'Armor class.' },
       initiative_bonus: { type: 'integer', description: 'Initiative modifier.' },
+      npc_tier: { type: 'string', enum: ['main', 'supporting'], description: 'Set "main" for an NPC whose presence or history matters across the campaign; they stay fully listed in the live state block even after a long absence.' },
       sheet: { type: 'json', description: 'Extra sheet fields to merge (stats, skills, saves, resources, ...).' },
       campaign: { type: 'string', description: 'Campaign identifier; defaults to the active campaign.' },
     },
     output: { schema: { type: 'json' }, render: (_a, v) => text(v) },
-    execute({ entity_id, kind = 'npc', name, hp, ac, initiative_bonus, sheet = {}, campaign }) {
+    execute({ entity_id, kind = 'npc', name, hp, ac, initiative_bonus, npc_tier, sheet = {}, campaign }) {
       const id = requireCampaign(campaign)
       const created = {
-        ...defaultEntity(entity_id, { kind, ...(name === undefined ? {} : { name }), ...(hp === undefined ? {} : { hp, max_hp: hp }), ...(ac === undefined ? {} : { ac }), ...(initiative_bonus === undefined ? {} : { initiative_bonus }) }),
+        ...defaultEntity(entity_id, { kind, ...(name === undefined ? {} : { name }), ...(hp === undefined ? {} : { hp, max_hp: hp }), ...(ac === undefined ? {} : { ac }), ...(initiative_bonus === undefined ? {} : { initiative_bonus }), ...(npc_tier === undefined ? {} : { npc_tier }) }),
         ...sheet,
       }
       saveEntity(id, entity_id, kind, created)
@@ -226,17 +263,27 @@ export function apply(ctx, config = {}) {
 
   ctx.tools.register(define({
     name: 'list_campaigns',
-    description: 'List campaign identifiers under campaign/ and show which is active.',
+    description:
+      'List campaign identifiers under campaign/, and report which one is attached to this session. '
+      + 'Use it when the player has to choose between starting a new campaign and continuing an existing one.',
     parameters: {},
     output: { schema: { type: 'json' }, render: (_a, v) => text(v) },
     execute() {
-      return { active: readActiveCampaign(), campaigns: listCampaignIds(), root: campaignRoot() }
+      const resolved = resolveSessionCampaign()
+      return {
+        attached: resolved.id,
+        attached_source: resolved.source,
+        campaigns: listCampaignIds(),
+        root: campaignRoot(),
+      }
     },
   }))
 
   ctx.tools.register(define({
     name: 'set_active_campaign',
-    description: 'Switch the active campaign in campaign_registry.md.',
+    description:
+      'Attach a campaign to this session, and record it as the workspace\'s most recently used one. '
+      + 'Call it when the player chooses to continue an existing campaign.',
     parameters: {
       identifier: { type: 'string', required: true, description: 'Campaign identifier to activate.' },
       name: { type: 'string', description: 'Human-readable name (defaults to the campaign name).' },
@@ -246,7 +293,22 @@ export function apply(ctx, config = {}) {
       if (!existsSync(campaignDir(identifier))) throw new Error(`No such campaign: ${identifier}`)
       const state = loadState(identifier)
       writeRegistry({ active: identifier, title: name ?? state?.name ?? identifier, setting: state?.setting ?? null })
-      return { active: identifier }
+      const attached = (() => { try { return bindSessionCampaign(identifier) } catch { return false } })()
+      return { attached_to_session: attached, campaign: identifier }
+    },
+  }))
+
+  ctx.tools.register(define({
+    name: 'detach_campaign',
+    description:
+      'Detach the campaign from this session, returning it to the choose-a-campaign state. Other sessions '
+      + 'keep theirs. Use it when the player wants to start over or the wrong campaign was attached.',
+    parameters: {},
+    output: { schema: { type: 'json' }, render: (_a, v) => text(v) },
+    execute() {
+      const was = resolveSessionCampaign()
+      const detached = (() => { try { return unbindSessionCampaign() } catch { return false } })()
+      return { detached, previous: was.id, previous_source: was.source }
     },
   }))
 
@@ -274,7 +336,10 @@ export function apply(ctx, config = {}) {
     name: 'update_entity',
     description:
       'Patch an entity sheet (shallow merge). Use for hp, ac, conditions, resources, position, and other sheet fields. '
-      + 'Creates the sheet on first use. This is the authoritative record for per-entity state.',
+      + 'Creates the sheet on first use. This is the authoritative record for per-entity state. '
+      + 'Set patch.npc_tier to "main" on an NPC whose presence or history matters across the whole campaign: '
+      + 'the live state block lists main NPCs in full even after a long absence, whereas everyone else is '
+      + 'demoted to a short name-only line once they have not appeared for a while.',
     parameters: {
       entity_id: { type: 'string', required: true, description: 'Entity id.' },
       kind: { type: 'string', enum: ['pc', 'npc'], description: 'pc (player/) or npc (actors/). Defaults to pc.' },

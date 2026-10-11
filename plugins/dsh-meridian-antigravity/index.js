@@ -27,8 +27,6 @@
  * @module @local/dsh-meridian-antigravity
  */
 
-import { randomUUID } from 'node:crypto'
-
 import { LlmAdapter, LlmError, assertUsableApiKey } from '@deepseek-ai/dsh-llm'
 import { Config, normalizeBaseURL, resolveOptions } from './lib/config.js'
 import { MeridianContract } from './lib/contract.js'
@@ -37,6 +35,9 @@ import { readImageRefs } from './lib/images.js'
 import { TurnGate } from './lib/limiter.js'
 import { createQuotaRouteHandler } from './lib/quota-route.js'
 import { createQuotaSource } from './lib/quota-source.js'
+import { resolveQuotaToken } from './lib/quota-token.js'
+import { quotaSurfaceEnabled } from './lib/quota.js'
+import { logPluginEvent } from './lib/plugin-log.js'
 import { runTurn } from './lib/transport.js'
 
 export { Config, normalizeBaseURL, resolveOptions } from './lib/config.js'
@@ -198,7 +199,16 @@ export function apply(ctx, config) {
     registeredPolicy = next.retryPolicy
   })
 
-  applyQuotaSurface(ctx, { optionsOf, resolveApiKey })
+  // The loader swallows an apply-time throw, so a surface that fails to register
+  // would leave the plugin looking healthy with no quota route at all. Record it
+  // before rethrowing: a half-registered row that refuses to start is easier to
+  // find than one that silently does nothing.
+  try {
+    applyQuotaSurface(ctx, { optionsOf, resolveApiKey })
+  } catch (error) {
+    logPluginEvent('quota surface failed to register', error)
+    throw error
+  }
 }
 
 /**
@@ -225,8 +235,15 @@ const QUOTA_ROUTE_PREFIX = '/dsh-meridian/quota'
  * @param dependencies - `optionsOf` and `resolveApiKey` for the credential.
  */
 function applyQuotaSurface(ctx, dependencies) {
+  // One switch for the whole surface. Gating only the refresh left the route
+  // mounted and the token injected, so a disabled quota still rendered a strip.
+  if (!quotaSurfaceEnabled(dependencies.optionsOf())) {
+    logPluginEvent('quota surface disabled by config: no route, no injection, no reads')
+    return
+  }
+
   const quota = createQuotaSource({ ...dependencies, logger: ctx.logger })
-  const enabled = () => dependencies.optionsOf().quotaEnabled !== false
+  const enabled = () => quotaSurfaceEnabled(dependencies.optionsOf())
 
   // Trigger one: every assistant response. Trigger two: a timer. Both go through
   // the same floor, so whichever fires first satisfies the other and the
@@ -251,18 +268,26 @@ function applyQuotaSurface(ctx, dependencies) {
   // the token by document injection. That is the same bridge the TTS bundle uses.
   ctx.inject(['webServer'], (webCtx) => {
     const webServer = webCtx.webServer
-    if (typeof webServer?.register !== 'function') return
-    const token = randomUUID()
+    if (typeof webServer?.register !== 'function') {
+      logPluginEvent('quota route not mounted: the injected webServer has no register()')
+      return
+    }
+    // `resolveQuotaToken` takes an options object. Passing the context here had
+    // every field default, so a configured token was ignored and the persisted
+    // path was never reached.
+    const token = resolveQuotaToken({
+      configured: dependencies.optionsOf().quotaToken,
+      logger: ctx.logger,
+    })
     webCtx.effect(() => webServer.register({
       kind: 'prefix',
       path: QUOTA_ROUTE_PREFIX,
       handler: createQuotaRouteHandler({ quota, token }),
     }), 'meridian-quota-route')
+    logPluginEvent(`quota route mounted at ${QUOTA_ROUTE_PREFIX}`)
 
     if (typeof webServer.tapIndex !== 'function') {
-      ctx.logger?.warn?.(
-        'meridian-antigravity: webServer has no tapIndex, so the browser half will not receive the quota token',
-      )
+      logPluginEvent('quota route mounted, but webServer has no tapIndex: the browser half will not receive the token')
       return
     }
     webCtx.effect(() => webServer.tapIndex((html) => {
@@ -271,6 +296,14 @@ function applyQuotaSurface(ctx, dependencies) {
       return html.includes('</head>') ? html.replace('</head>', `${tag}</head>`) : tag + html
     }), 'meridian-quota-identity')
   })
+
+  // A dependency that never resolves is invisible: the callback above simply does
+  // not run and the plugin looks healthy while its route does not exist. TTS hit
+  // exactly that on its first live run, so say so out loud -- and on disk, because
+  // the launcher console is not kept.
+  if (ctx.get?.('webServer', false) === undefined) {
+    logPluginEvent('webServer is not up yet; the quota route will mount when it is')
+  }
 }
 
 /**

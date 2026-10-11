@@ -1,6 +1,8 @@
-# Scratch: session state
+# Scratch: session state (archived)
 
-**Primary handoff: [`docs/meridian-spent-batch-plan.md`](docs/meridian-spent-batch-plan.md)**
+> Archived from the repository root. Its contents describe an earlier session and are kept for history.
+
+**Primary handoff: [`docs/plugins/dsh-meridian-antigravity/spent-batch-plan.md`](../plugins/dsh-meridian-antigravity/spent-batch-plan.md)**
 — the incident, Meridian's `ag_state` ledger and how to query it, everything shipped
 (§4 first pass, §6 the follow-up bugs), the mutation-verification table, and the open
 threads. Read that first.
@@ -201,8 +203,8 @@ Two things flagged to the user, not resolved:
 
 ## Guard coverage + connector conflict repair (complete, needs a restart)
 
-Full plan and amendments: `docs/guard-coverage-and-repair-plan.md`. Restart checklist:
-`docs/meridian-spent-batch-plan.md` §9.
+Full plan and amendments: `docs/plugins/dsh-compaction-guard/coverage-and-repair-plan.md`. Restart checklist:
+`docs/plugins/dsh-meridian-antigravity/spent-batch-plan.md` §9.
 
 **Item 1 — done, needs a restart.** The guard was effective but only inside presets
 that mount it: a preset's plugin list is not a Loader row, each preset group
@@ -344,7 +346,7 @@ guard fails two dd35 tests.
   opens with a `## Current State` block from three sessions ago, and everything in it
   is re-injected as authoritative on every request.
 - **Open finding, unfixed:** a branch is not a fresh session — `fork` truncates history
-  with no in-session marker. Recorded in `docs/chat-controls-implementation-plan.md`
+  with no in-session marker. Recorded in `docs/archive/chat-controls-implementation-plan.md`
   Phase 7.
 - **`policy.cjs` is answered:** it is a tool allow-list hook, **not** the content
   filter. Its baked-in allow-list matches the current dd35 tool names

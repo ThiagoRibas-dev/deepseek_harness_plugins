@@ -25,3 +25,18 @@
         requireHealthGate: true
         expectedBackend: antigravity
         expectedCliVersion: 1.2.7
+        # Keep the exact body of the last dispatches. When Meridian refuses a
+        # continuation it compares the request against a history this process never
+        # sees, so what was sent is the only evidence -- and diffing the refused
+        # request against the one before it NAMES the message that moved instead of
+        # guessing at a cause. The connector puts that in both the log and the
+        # notice it commits for the lost turn.
+        #
+        # A capture is a COMPLETE, UNREDACTED transcript: every message and every
+        # tool result, campaign prose included. Treat the directory as session
+        # data, and turn this off once the diagnosis is done -- nothing else
+        # depends on it.
+        captureRequestBodies: true
+        captureDir: /root/.dsh/meridian-capture
+        # Enough to diff across interleaved sessions.
+        captureMaxFiles: 50

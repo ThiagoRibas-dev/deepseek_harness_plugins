@@ -12,7 +12,7 @@
 > deployed rather than developed in-tree, and its history stops at the commit that removed it.
 
 *Backlog for plugins that belong to the **profile**, not to an agent preset. Kept separate from
-[`dd35-future-improvements.md`](dd35-future-improvements.md) on purpose.*
+[`dd35/future-improvements.md`](dd35/future-improvements.md) on purpose.*
 
 ## Why this is a separate document
 
@@ -71,7 +71,7 @@ is installed and active in this profile. See [Provisioning](#provisioning--take-
 
 [Kokoro](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX) is an 82M-parameter Apache-2.0 TTS model. The
 published ONNX repo is public and ungated (709k downloads, 267 likes), so the weights are plain unauthenticated
-HTTPS and can be fetched the same way [FI-10](dd35-future-improvements.md#fi-10--the-onnx-inference-substrate)
+HTTPS and can be fetched the same way [FI-10](dd35/future-improvements.md#fi-10--the-onnx-inference-substrate)
 already specifies for Laya.
 
 | Variant | File | Size |
@@ -1271,7 +1271,7 @@ underneath a running process sends later appends to the replaced inode and silen
 repair, restart — one operation, since the restarted process must also carry the plugin fix.
 
 **What actually happened:** the first affected conversation was **archived rather than repaired**. Its record is
-kept in [session-05161aa9-report.md](session-05161aa9-report.md), reconstructed from the projection cache — which
+kept in [session-05161aa9-report.md](archive/session-05161aa9-report.md), reconstructed from the projection cache — which
 survives a log that will not load, and is the reason that cache is worth knowing about.
 
 The orphaned `ttsPreference` row in the projection cache needs no attention: `restore` iterates *registered* units

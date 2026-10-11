@@ -82,7 +82,7 @@ Nothing offline proves that committing the notice makes Meridian accept the next
 
 **Step 4.3 — branch on the result.** If the next request succeeds, leave the notice as written. If it does not, the repair is cosmetic for the rewrite case: say so in the notice, name the remedy (fork from before the affected turn), and record that the rewrite conflict is not repairable from the connector — which strengthens the case for Fix 5.
 
-**Acceptance:** written down in `docs/meridian-spent-batch-plan.md` either way, including a negative result.
+**Acceptance:** written down in `docs/plugins/dsh-meridian-antigravity/spent-batch-plan.md` either way, including a negative result.
 
 **Status after the 2026-10-07 restart.** One of the three unknowns is settled and one instruction of mine was wrong.
 

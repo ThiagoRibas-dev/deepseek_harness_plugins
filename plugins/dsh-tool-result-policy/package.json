@@ -1,0 +1,34 @@
+{
+  "name": "@local/dsh-tool-result-policy",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Preset-scoped, live-toggleable tool-result retention: strip results no turn needs to remember, and truncate the rest.",
+  "meta": {
+    "title": "Tool-Result Retention",
+    "description": "Replaces the shipped tool-result pruner with one that also strips transient reads, spent entropy and mutation echoes. Measured: 72% of provider-bound bytes were retained tool output across 88 sessions."
+  },
+  "exports": {
+    ".": "./plugin.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./plugin": "./plugin.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots"
+      ],
+      "external": [
+        "react"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@local/dsh-compaction-guard": "*"
+  }
+}

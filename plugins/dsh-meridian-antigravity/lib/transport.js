@@ -11,12 +11,13 @@
  */
 
 import { LlmError, attributionHeaders } from '@deepseek-ai/dsh-llm'
-import { batchSpent, meridianErrorFromText, streamInterrupted } from './errors.js'
+import { batchSpent, meridianErrorDetail, meridianErrorFromText, streamInterrupted } from './errors.js'
 import {
   blockedReplyNotice, isSpentBatch, rewrittenContinuationNotice, spentBatchNotice,
 } from './failure.js'
 import { enforceRequestBudget, serializeRequest } from './serialize.js'
 import { writeCapture } from './capture.js'
+import { describeMovedMessage } from './diagnostics.js'
 import { continuationHint } from './continuation.js'
 import { logicalRequestHash } from './idempotency.js'
 import { MeridianTranslator, parseSse } from './stream.js'
@@ -32,6 +33,33 @@ const ANTHROPIC_VERSION = '2023-06-01'
  * @returns the harness chunk stream for this turn.
  */
 export async function* runTurn(dependencies, options) {
+  let currentOptions = options
+  while (true) {
+    try {
+      for await (const chunk of runTurnAttempt(dependencies, currentOptions)) {
+        yield chunk
+      }
+      return
+    } catch (error) {
+      if (error.code === 'MERIDIAN_CONTINUATION_CONFLICT_RETRY') {
+        dependencies.logger?.warn?.('meridian-antigravity: caught MERIDIAN_CONTINUATION_CONFLICT, automatically retrying with capped history')
+        currentOptions = {
+          ...currentOptions,
+          _isRetry: true,
+          messages: [
+            ...currentOptions.messages,
+            { role: 'assistant', content: [{ type: 'text', text: 'Recovering from transcript conflict.' }] },
+            { role: 'user', content: [{ type: 'text', text: 'The previous tool batch was interrupted by a transcript rewrite. Please continue your work using the tool results above.' }] }
+          ]
+        }
+        continue
+      }
+      throw error
+    }
+  }
+}
+
+async function* runTurnAttempt(dependencies, options) {
   const { connection, contract, ledger, gate, resolveApiKey, logger } = dependencies
   const signal = options.signal
   const warn = once(dependencies.warn)
@@ -99,6 +127,11 @@ export async function* runTurn(dependencies, options) {
   // is set where the response arrives rather than inferred from a status code
   // later, so the two cases cannot be confused.
   let reachedMeridian = false
+  // Meridian's own words for a refusal. Kept beside the classified error because
+  // `LlmError.failure` is a frozen `{ code, message, status, requestId }`, so the
+  // provider's text survives only inside a message the notice would otherwise
+  // paraphrase. Bounded: this ends up in a transcript.
+  let providerBody = ''
   const idle = idleWatch(signal, connection.streamIdleTimeoutMs)
   try {
     const key = await resolveApiKey(connection)
@@ -109,6 +142,7 @@ export async function* runTurn(dependencies, options) {
       if (!response.ok) {
         // Meridian answered, so this is its verdict rather than a lost request.
         const text = await response.text()
+        providerBody = text
         throw withContinuationHint(meridianErrorFromText(response.status, response.headers, text), continuation)
       }
       translator.markReplayed(response.headers.get('x-meridian-response-replayed') === 'true')
@@ -168,10 +202,40 @@ export async function* runTurn(dependencies, options) {
         // answer. That text is kept and the notice says so, rather than being
         // discarded along with the failed turn.
         const shown = translator.state.streamedText
+        // What Meridian actually said, and — when request capture is on — which
+        // message moved between the last two dispatches. Both are recorded because
+        // the notice replaces the error: without them the only account of the turn
+        // is the connector's paraphrase, which is how a pruner blame outlived an
+        // investigation that showed the pruner had nothing to do with it.
+        const provider = rewritten ? providerRefusal(providerBody) : ''
+        const moved = rewritten
+          ? describeMovedMessage(connection, scope, options.purpose ?? null)
+          : ''
+
+        if (rewritten && !options._isRetry) {
+          logger?.warn?.(
+            `meridian-antigravity: refusal detail: code=${code ?? 'unknown'}`
+            + ` status=${failure.failure?.status ?? 'unknown'}`
+            + ` request=${failure.failure?.requestId ?? 'unknown'}`
+            + ` session=${scope === '' ? 'unknown' : scope}`
+            + `${provider === '' ? '' : ` provider="${provider}"`}`
+            + `${moved === '' ? '' : ` moved=${moved}`}`,
+          )
+          throw Object.assign(new Error('Retry'), { code: 'MERIDIAN_CONTINUATION_CONFLICT_RETRY' })
+        }
+
         logger?.warn?.(
           'meridian-antigravity: Meridian consumed this turn\'s tool batch for a reply that was never'
           + ` completed (${shown.length > 0 ? 'a partial reply was delivered' : 'no reply was produced'});`
           + ' committing a notice so the conversation can continue',
+        )
+        logger?.warn?.(
+          `meridian-antigravity: refusal detail: code=${code ?? 'unknown'}`
+          + ` status=${failure.failure?.status ?? 'unknown'}`
+          + ` request=${failure.failure?.requestId ?? 'unknown'}`
+          + ` session=${scope === '' ? 'unknown' : scope}`
+          + `${provider === '' ? '' : ` provider="${provider}"`}`
+          + `${moved === '' ? '' : ` moved=${moved}`}`,
         )
         // `spent` wins over `rewritten`: Meridian's "already consumed" text is
         // itself a 409, so it arrives under the same code and is the more
@@ -179,7 +243,12 @@ export async function* runTurn(dependencies, options) {
         const notice = spent
           ? spentBatchNotice(continuation?.results)
           : rewritten
-            ? rewrittenContinuationNotice(continuation?.results)
+            ? rewrittenContinuationNotice(continuation?.results, {
+                provider,
+                status: failure.failure?.status,
+                requestId: failure.failure?.requestId,
+                moved,
+              })
             : shown.length > 0
               ? blockedReplyNotice(continuation?.results)
               : spentBatchNotice(continuation?.results)
@@ -408,6 +477,30 @@ function isAbort(error) {
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Meridian's own words for a refused continuation, from the raw response body.
+ *
+ * The body is JSON, so its message and type are preferred; anything unparseable
+ * falls back to the raw text. Not truncated here, so the log line and the notice
+ * quote the same string and only the notice decides how much fits.
+ *
+ * @param raw - the response body text of the refused request, or `''`.
+ * @returns the provider's message, or `''` when there is none.
+ */
+function providerRefusal(raw) {
+  const text = String(raw ?? '')
+  if (text.length === 0) return ''
+  try {
+    const { message, type } = meridianErrorDetail(text)
+    if (typeof message === 'string' && message.length > 0) {
+      return typeof type === 'string' && type.length > 0 ? `${type}: ${message}` : message
+    }
+  } catch {
+    // Not JSON, or not the shape Meridian usually sends.
+  }
+  return text
 }
 
 /** Collapse repeated advisor warnings into one line per turn. */

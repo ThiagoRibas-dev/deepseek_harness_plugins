@@ -136,16 +136,10 @@ export function serializeRequest({ options, connection, images, imageAccess, war
   // Injected state notices are not model input: they describe harness state the
   // process cannot act on, and DSH appends them after the player's own message.
   //
-  // Dropping a superseded runtime-context snapshot rewrites history, which is
-  // only safe on the request that starts a turn. Meridian requires each tool
-  // continuation's prefix to hash to the message list it delivered, and the
-  // snapshot that was newest when that list went out stops being newest as soon
-  // as the harness injects another one mid-turn. Filtering then removes it from
-  // the prefix, the hashes diverge, and Meridian answers 409 "changed its
-  // delivered history or tool batch" -- which is what happened on every long
-  // tool loop where the runtime context refreshed. A continuation therefore
-  // sends the history verbatim: the new snapshot is appended after the tool
-  // results, where Meridian accepts it, and nothing before them moves.
+  // The filter runs only on the request that starts a turn. A continuation sends
+  // the history verbatim, because filtering it would move the prefix Meridian
+  // pinned -- the superseded-snapshot question is settled before the wire now, so
+  // there is nothing left for a continuation to filter.
   const { messages: history, dropped } = continuation === undefined
     ? filterNoticeMessages(options.messages, {
       ignoredKinds: connection.ignoredNoticeKinds,
@@ -318,6 +312,19 @@ function buildMessages({ options, connection, images, imageAccess, retained }) {
   const wire = []
   for (const message of history) {
     if (message.role === 'system' || message.role === 'developer') continue
+    // The runtime-context snapshot is re-injected whenever the session's file or
+    // approval policy is restated, and it lands *before* the pending tool batch,
+    // so it rewrites a prefix Meridian has already pinned. Measured on a failing
+    // `dd35` turn by diffing the captures: it was the ONLY difference between the
+    // turn opener and its continuation -- messages 0 and 28, byte-identical once
+    // the snapshot was removed -- and that difference is what Meridian answered
+    // with "changed its delivered history or tool batch".
+    //
+    // `body.system` does not carry this text, so the model does not see the
+    // policy restatement. Sending it is not an option while it can change
+    // mid-turn: a prefix that moves between a tool call and its result loses the
+    // whole turn, which costs more than the restatement is worth.
+    if (sourceKindOf(message) === RUNTIME_CONTEXT_KIND) continue
     if (message.role === 'tool') {
       const content = toolResultContent(message, images, retained)
       pushWire(wire, 'user', content, true)

@@ -4,7 +4,7 @@
 workspace (`Projects/Writing/TTRPG/D&D35/docs/`), where it described a bundle that had already left
 that repository — which is why the two drifted apart.*
 
-> **Contract and usage live in [`plugins/dsh-dd35-preset/README.md`](../plugins/dsh-dd35-preset/README.md).**
+> **Contract and usage live in [`plugins/dsh-dd35-preset/README.md`](../../plugins/dsh-dd35-preset/README.md).**
 > This document is the *design rationale* and the *corpus measurements*: the parts with no other home.
 > It deliberately does not restate the tool inventory, the file layout, or the capture rules, because
 > duplicating a reference is how this file went stale the first time.
@@ -15,7 +15,7 @@ that repository — which is why the two drifted apart.*
 
 | Layer | Content |
 |---|---|
-| **Preset plugins** | 14 entries — the composition table lives in the [README](../plugins/dsh-dd35-preset/README.md) |
+| **Preset plugins** | 14 entries — the composition table lives in the [README](../../plugins/dsh-dd35-preset/README.md) |
 | **Tools** | **43** across 5 plugins, plus automatic turn capture, over 3 shared modules |
 | **Skills** | **6** (`dd35-*`), discovered live from `<projectRoot>/.agents/skills/` |
 | **Instructions** | `<projectRoot>/.agents/AGENTS.md` — ⚠️ **present but not loaded**; see [§4](#4-the-instruction-file-is-in-the-wrong-place) |
@@ -62,7 +62,7 @@ The model never invents these; it only supplies inputs.
 
 | Behaviour | Where |
 |---|---|
-| **Every die roll** (`Math.random`, d4–d100, `2d6+3`) | [`dice.js`](../plugins/dsh-dd35-preset/dice.js) — the single engine |
+| **Every die roll** (`Math.random`, d4–d100, `2d6+3`) | [`dice.js`](../../plugins/dsh-dd35-preset/dice.js) — the single engine |
 | **Temp HP absorption order** — temp pool drains before real HP | `apply_damage`, `roll_attack` |
 | **Death thresholds** — 0 = disabled, −1…−9 = dying/unconscious, −10 = dead | `hpStatus` |
 | **Critical confirmation** — threat range, confirm roll, dice×mult with the flat bonus applied once | `roll_attack` |
@@ -133,7 +133,7 @@ plugins a preset mounts.
 
 ### `dm_persona.md` and `dm_notes.md` — the campaign's own layers
 
-Read from the active campaign directory on every request (see the [README](../plugins/dsh-dd35-preset/README.md)).
+Read from the active campaign directory on every request (see the [README](../../plugins/dsh-dd35-preset/README.md)).
 The persona half is a *dynamic system-prompt section* placed directly after the static prefix; the
 notes half is a *runtime-context snapshot*, so writing notes never invalidates the cached prefix. Both
 are per-campaign, so `set_active_campaign` switches them.
@@ -233,7 +233,7 @@ touching code. Tracked as FI-3.
 ## 6. Known gaps
 
 Beyond the monster corpus. Each of these is a backlog item in
-[`dd35-future-improvements.md`](dd35-future-improvements.md), which owns the detail and the priority:
+[`future-improvements.md`](future-improvements.md), which owns the detail and the priority:
 
 | Gap | Item |
 |---|---|

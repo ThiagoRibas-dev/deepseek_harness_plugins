@@ -674,11 +674,32 @@ use it for both.
 
 **Priority P1 · Effort ~half day · Status `SPECCED` — channel identified, live spike still owed**
 
+> **Comprehensive Before/After Specification:** See [`docs/dd35/memory-model.md`](memory-model.md) for the complete end-to-end turn lifecycle design uniting FI-9 state injection, deterministic scene entity hydration, and the post-turn asynchronous SLM swarm.
+>
+> **Rev 2 of that spec corrected three claims against the code**, and the corrections bear on FI-9
+> directly: (1) an injected snapshot is *retained in session history* — `RuntimeContextProjection`
+> decides when to append, not what to forget, so superseding is a **provider-side delivery filter**
+> (`dsh-meridian-antigravity` only); (2) the `get_state` result is **1,205 B ≈ 344 tokens** on the
+> Phase 0 campaign — near the original ~300 estimate, not the "2–3× low" rev 2 itself claimed;
+> (3) the saved inference is the *cheap* one, so the latency win is meaningful but not a flat halving.
+> **Rev 3 added the finding that matters most for FI-9:** both paths run the same `briefEntity`
+> projection, which drops `conditions[].effect`, `resources`, and `notes` — 75% of a measured PC
+> sheet — so **hydration buys latency, not information** and the snapshot is not a correctness
+> mechanism. See §4.1.3, §4.2.4, §5 (*Information content*), §7, and §8 (open questions) there.
+>
+> **Rev 4 re-sequenced FI-9 behind two cheaper changes** (spec §9.2), after comparing the design with
+> `sneq-engine`, NarrativeEngine-P, llmdm, and dnd-ai (spec §9.5). The two changes are **widening
+> `briefEntity`** (spec §4.4 — this is what removes the second read) and **a write-path gate** on
+> `update_scene`/`init_combat`/`add_combatant` (spec §4.3.2 — this fixes a confirmed live bug, and
+> `init_combat` currently fabricates an `hp 1, ac 10` sheet for any unknown id). **FI-9 is now
+> deferred, not deleted:** if widening the projection lets the DM narrate mechanics without a second
+> read, the information argument for the snapshot disappears and only a latency argument remains.
+
 ### The problem
 
 `dd35-gameplay-loop` instructs the model to call `get_state` as step 1 of every turn. That works, but
 it costs a **tool round-trip on every turn**: the model emits a call (~40 output tokens), waits for
-the result (~300 input tokens), then re-reads the whole context for a second inference. The state
+the result (**~344 input tokens measured**), then re-reads the whole context for a second inference. The state
 tokens are unavoidable; the extra inference is not.
 
 ### The mechanism — use the runtime-context channel, not `agent/pre-step`
@@ -747,15 +768,32 @@ per turn** — the expensive part on a long campaign.
 
 ### Verification spike (before building)
 
-1. **Confirm the snapshot's surface position and growth.** Each superseding snapshot should append a
-   new `user/message` and leave the prefix cached; confirm that a scene-boundary change does not cost
-   a full prefix miss, and measure how many stale snapshots accumulate in a long session (the
-   supersede notice exists so the model ignores them, but they still occupy history).
+> **Amended after the rev-2 code audit.** Item 1 below is the open question, not a formality: the
+> snapshot token does **not** garbage-collect, and the native provider does not filter superseded
+> snapshots out of the request. Measure it first — it decides whether this block may change every turn
+> at all. Item 4 is new.
+
+1. **Confirm the snapshot's surface position and *retention*.** Each superseding snapshot appends a
+   new `user/message` and leaves the prefix cached — but earlier snapshots are **not removed**
+   (`packages/core/agent-loop/src/runtime-context.ts:114-163`; only
+   `dsh-meridian-antigravity/lib/serialize.js:56-76` filters them from delivery, and only on that
+   provider). Count them: `session.snapshotEvents()` filtered on `source.kind === 'runtime-context'`
+   after ~50 turns, on the provider actually in use. If they accumulate in the request, either accept
+   the cost or emit the block only on material change (scene boundary, combat start/end, clock jump).
 2. **Confirm the snapshot is not visible to FI-1's capture** as player input — expected to hold via
-   `source.kind`, but worth asserting in the live runtime rather than only in the stand-in test.
-3. **Decide whether state changes mid-turn.** If the block only refreshes at request assembly, a
-   `next_turn` mid-combat is reflected on the next step's request; confirm that is soon enough, or add
-   the explicit `get_state` call back into the encounter skill.
+   `source.kind`, and already unit-tested (`tests/memory.test.mjs:124-129`), but worth asserting in the
+   live runtime rather than only in the stand-in test.
+3. **Decide whether state changes mid-turn.** The block refreshes at request assembly (per *step*, not
+   per turn), so a `next_turn` mid-combat is reflected on the next step's request. Confirm that is soon
+   enough, or add the explicit `get_state` call back into the encounter skill. Note the gap that
+   assembly alone does not close: `apply_damage` and `roll_attack(apply: true)` do **not** touch
+   `state.json`, so the rendered block is byte-identical and no new snapshot is emitted at all.
+4. **Decide what the block may claim.** It can render only fields the sheets have — `briefEntity`'s
+   projection. Secrets, allegiances, and dispositions have no home on an entity sheet, and the campaign
+   folder is browsable by the player, so they belong in `dm_notes.md` (already injected) rather than in
+   `actors/*.json`. Hydration also keys on `state.scene.entities`, which `update_scene` populates at
+   end of turn: a forgotten call yields a quietly empty block, so consider a compact roster of all
+   known NPCs alongside the scene list.
 
 ---
 
@@ -1229,12 +1267,236 @@ that genuinely exceeds the turn budget.
 
 ---
 
+# Oracle consolidation and automation (FI-18 … FI-20)
+
+Measured against the live corpus and against
+[`oracle_mcp_matrix.md`](../../../../../Projects/Writing/TTRPG/D&D35/docs/oracle_mcp_matrix.md) — the campaign's
+own specification for these tables. Three findings drive this group:
+
+1. **Four of the thirteen specified oracles were never built** — `get_random_dc`, `trigger_gm_move`,
+   `roll_magic_effect`, `roll_6d12_exploration`. Five tables ship in `tables.json` that no tool can reach:
+   `dc_difficulty`, `gm_moves`, `boon_table`, `bane_table`.
+2. **Four generators draw incoherent rows.** `generate_plot_hook`, `generate_npc`, `explore_dungeon_room`
+   and `explore_hex` each call `randomRow()` once *per field* on the same table. One row is coherent
+   (`Recover something valuable / Guardians / Knowledge and secrets`); three independent draws are not.
+   `explore_dungeon_room` rolls four times on a six-row table.
+3. **`roll_solo_oracle` accepts a `likelihood_modifier` of ±20 against a d20** while the model also chooses
+   the question, so the model can sweep the entire table. The matrix specifies likely/unlikely — ±2.
+
+---
+
+## FI-18 — `ask_oracle`: one random choice, DM-supplied options or a canonical preset
+
+**Priority P1 · Effort ~half day · Status `SHIPPED`** — `ask_oracle` in `plugins/dsh-dd35-preset/oracles.js`, 36 tests in `tests/oracles.test.mjs`.
+
+### The problem
+
+`roll_solo_oracle` is one hardcoded case of a general operation: pick one outcome at random. Its table has
+four rows, so its resolution is coarse, and every new yes/no-shaped question needs either a new table or a
+new tool. Meanwhile four oracles specified in the matrix were never built at all.
+
+### The design
+
+One tool, two input modes:
+
+```
+ask_oracle({ question, options: ["helps", "refuses", "calls for backup"] })
+ask_oracle({ preset: "gm_move_pacing" })
+```
+
+* **`options`** — the DM enumerates the outcomes. Flat distribution over the list. The tool returns the
+  chosen option, the raw roll, and the odds, and **does not narrate**. The result is the DM's to interpret.
+* **`preset`** — a canonical option set that lives in the tool, recovering the unbuilt oracles without
+  adding tools:
+
+  | Preset | Table | Behaviour |
+  | :--- | :--- | :--- |
+  | `solo` | `oracle_table` | yes/no with nuance; interrupt on a raw 1 or 20, checked *before* any modifier |
+  | `gm_move_pacing` / `gm_move_failure` | `gm_moves` | one move |
+  | `magic_boon` / `magic_bane` | `boon_table` / `bane_table` | one effect, weighted by its printed range |
+  | `random_dc` | `dc_difficulty` | takes `level: low\|mid\|high`, rolls d6, returns the DC |
+  | `monster_tactic` / `monster_reaction` | `monster_intentions` / `monster_reactions` | one entry |
+
+### Rules
+
+* **The modifier is capped at ±2.** "Likely" and "unlikely" per the matrix; the current ±20 lets the model
+  steer the roll to whatever it already wanted, which makes the oracle decorative.
+* **The roll is always returned raw and modified.** If a result is unfavourable the DM can see it chose to
+  shift the odds, and by how much.
+* **The `solo` interrupt check stays procedural** — a raw natural 1 or 20 is caught before the modifier is
+  applied, exactly as the matrix specifies and as `roll_solo_oracle` already does.
+* The tool never narrates and never writes campaign files.
+
+### Acceptance
+
+- [ ] `ask_oracle` with `options` returns one of them, the roll, and the odds.
+- [ ] Every preset above resolves; `random_dc` honours the level category.
+- [ ] A `likelihood_modifier` beyond ±2 is rejected with a message naming the bound.
+- [ ] `roll_solo_oracle` is retired; its interrupt behaviour is preserved inside the `solo` preset.
+- [ ] Tests cover: option selection bounds, interrupt-before-modifier, modifier clamping, each preset.
+
+---
+
+## FI-19 — `consult_oracle`: several independent vectors at once
+
+**Priority P1 · Effort ~half day · Status `SHIPPED`** — `consult_oracle` in `plugins/dsh-dd35-preset/oracles.js`
+(logic in `oracle-core.js`).
+
+### A third mode, added while building: `coherent`
+
+The spec above describes vector draws only. Building it exposed that the retired generators had a second,
+distinct job that vectors cannot do: producing **one coherent thing** — a room with matching location,
+encounter, object and exits; a plot hook whose objective, adversary and reward belong together.
+
+So `consult_oracle` takes either `vectors` (independent words to reconcile) **or** `coherent`, which rolls
+**one whole row** of a table whose columns describe a single entity:
+
+```
+consult_oracle({ coherent: 'plot_hook' })
+→ { Objective: "Escort or deliver to safety",
+    Adversaries: "Local inhabitants",
+    Rewards: "Support of an ally" }
+```
+
+Coherent tables: `plot_hook`, `dungeon_room`, `hex`, `npc`. The roll column is stripped from the returned
+fields, and every content column is returned together — the guarantee being that the fields come from
+exactly one row, which a test asserts by looking the tuple up in the table.
+
+**The distinction is the point, and the two modes must not be confused.** Drawing twice from a coherent-row
+table is the incoherence bug the retired `generate_*` tools had; drawing once from a single-vector table is
+what makes the vector mode work. `consult_oracle` therefore refuses a coherent-row table in its `tables`
+list and says why.
+
+### The problem
+
+Inspiration oracles today return **one** value per call (`draw_keyword`, `draw_focus`) or a set of
+*unrelated* values glued together (`generate_*`, see finding 2 above). The first is too thin at a scene
+boundary; the second is incoherent because the fields were never related.
+
+### The design
+
+Roll several tables **once each** and return the results as independent vectors the DM must reconcile:
+
+```
+consult_oracle()                      → default set
+consult_oracle({ vectors: 5 })        → manual count
+consult_oracle({ tables: ["keywords","muse_upright"] })
+```
+
+Default set: **3 keywords** (from the 792-row vocabulary), **action / detail / topic** (the three columns
+that are designed to be read together), and **one muse column** — about seven short words, roughly 60–80
+tokens.
+
+### Rules
+
+* **One roll per table, and never two rows from one coherent-row table.** Multi-vector drawing is correct
+  for single-vector tables (a word from a large vocabulary); it is exactly the incoherence bug if applied
+  to `plot_hook_generator` or `dungeon_crawler`. The table whitelist is therefore restricted to
+  single-vector sources plus the focus/muse columns.
+* **The tool returns vectors and nothing else** — no narration, no interpretation.
+* **Manual calls specify the count**; the automatic caller (FI-20) uses the default.
+* **`draw_keyword`, `draw_focus` and `draw_muse_prompt` are retired** into it.
+
+### Acceptance
+
+- [ ] The default set returns 3 keywords + action/detail/topic + one muse column.
+- [ ] `vectors` changes the keyword count; `tables` restricts the set.
+- [ ] A coherent-row table is rejected from `tables` with a message explaining why.
+- [ ] Manual calls are genuinely random; seeded calls (FI-20) are reproducible from `(turn, table)`.
+
+### What shipped, and what was learned
+
+`ask_oracle` and `consult_oracle` are live, and the ten old oracle tools are gone: `roll_solo_oracle`,
+`draw_keyword`, `draw_focus`, `draw_muse_prompt`, `generate_plot_hook`, `generate_npc`,
+`explore_dungeon_room`, `explore_hex` and `roll_monster_behavior` were retired, `roll_dice` kept. Ten
+tools at ~1,900 tokens of schema became three at ~1,070.
+
+`consult_oracle` gained a third mode beyond the vectors FI-19 describes: **`coherent`** draws one whole
+row from a table whose columns belong together, which is what the retired generators should always have
+done. `coherent: "plot_hook"` returns an objective, an adversary and a reward from a single row.
+
+**The measurement that changed the design.** The plan assumed the range columns in `tables.json` were
+authoritative, so a d100 table could be read by looking up the roll. They are not:
+
+| table | rows | die coverage |
+| :--- | ---: | ---: |
+| `monster_intentions` | 10 | 100 / 100 |
+| `boon_table` | 29 | **58 / 100** |
+| `bane_table` | 50 | **55 / 100** |
+| `monster_reactions` | 6 | **21 / 100** |
+| `oracle_table` | 4 | 7 / 20 |
+
+and the ranges that do exist are shuffled and overlapping — `monster_reactions` lists `01-04`, `72`,
+`09-12`, `77-80`, `29-32`, `97-100` — so lookup order, not the roll, decides the answer. **The shipped
+`roll_monster_behavior` therefore returned `null` on 79 of 100 mid-combat rolls**, and `roll_solo_oracle`
+missed 13 of 20. Two of the four "unbuilt" oracles would have been built on the same broken assumption.
+
+So uniform row selection became the general draw, and range lookup is used only where coverage is
+complete (`monster_intentions`, `dc_difficulty`, and `oracle_table`'s separate `MinRoll`/`MaxRoll`
+columns). Boon, bane and monster reactions now draw uniformly: honest, and incapable of failing. The
+weights those tables intended are already lost to the shuffled ranges, so nothing was given up.
+
+**A doctor check is owed here.** — "every table's range column covers its die, with no overlaps and no
+gaps" belongs in `dd35_doctor` (§9.3 of the memory spec): it is a data-integrity property of a shipped
+file, it is currently violated by four tables, and no runtime path would ever surface it.
+
+---
+
+## FI-20 — Automatic oracle on scene change
+
+**Priority P2 · Effort ~1 day · Status `SHIPPED`** — `oracleBlock()` in `plugins/dsh-dd35-preset/scene-state.js`, tests in `tests/scene-state.test.mjs`.
+
+### The problem
+
+A manual oracle only fires when the DM thinks to ask, which means the model decides when it wants entropy —
+and a model that has already decided what happens next will not ask. The moment that most needs a fresh
+direction is the moment a new scene opens, and that is detectable without the model's cooperation.
+
+### The trigger
+
+**The current scene title differs from the previous turn's transcript-header title.**
+
+Verified against the corpus: a title change lands on the turn that *plays* the new scene
+(`0126 The Boar's Rest` → `0127 The Boar's Rest - Bath`), and it fires **6 times in 41 turns** — one per
+~7 turns, clustered at real transitions and never mid-scene.
+
+Two guards, both learned from getting them wrong:
+
+* **A → B, never nothing → A.** With no previous record there is nothing to have changed from, so the
+  first turn never fires. (The same null-prior guard §12's location check needed.)
+* **Once per turn.** Context renders **per step**, so a mid-turn rename would otherwise re-fire inside the
+  same scene. The last-fired turn is tracked and suppressed.
+
+### Determinism
+
+The injected roll is **seeded from the turn number**, so it is stable across the steps of one turn —
+otherwise the snapshot would carry different vectors on every step of the same scene, which is incoherent
+and would churn the runtime-context snapshot. The manual `consult_oracle` stays genuinely random.
+
+The roll is therefore reproducible from `(turn, table)` and needs no persistence.
+
+### Budget
+
+The oracle block gets **its own byte budget**, separate from `sceneStateMaxBytes`, so a large scene state
+cannot squeeze out the vectors and vice versa. Rendered in the runtime snapshot with the state block.
+
+### Acceptance
+
+- [ ] Fires on a title change against the previous turn's header title; not on the first turn.
+- [ ] Fires at most once per turn.
+- [ ] The same turn yields the same vectors across steps.
+- [ ] Its own cap, independent of the state block's.
+- [ ] Fallback to `scene.location` when `scene.title` is empty — otherwise a campaign that leaves the title
+      blank would never fire it.
+
+---
+
 ## Notes
 
 - The architecture these items extend is documented in
-  [`dd35-preset-architecture.md`](dd35-preset-architecture.md) — design rationale and corpus
+  [`preset-architecture.md`](preset-architecture.md) — design rationale and corpus
   measurements; the plugin's contract and usage live in
-  [`plugins/dsh-dd35-preset/README.md`](../plugins/dsh-dd35-preset/README.md).
+  [`plugins/dsh-dd35-preset/README.md`](../../plugins/dsh-dd35-preset/README.md).
 - **FI-1 and FI-2 are the stated priorities. FI-1 is done; FI-2 is next.** FI-2 is `SPECCED` and can
   be picked up directly; its open questions are the only decisions outstanding.
 - **FI-9 is now the cheapest remaining P1** — it is coupled to FI-1 (the memory summary rides in its
@@ -1261,7 +1523,7 @@ that genuinely exceeds the turn budget.
   `**Player:** Context is at 82% …`, and that turn's transcript is not the player's words at all. The
   notice now declares `kind: 'context-pressure'` — source kinds are merge-extensible and consumers
   fall through unknown ones (`dsh-llm/src/message.ts:103`); the thing that cannot be added is an event
-  *type*, per the poisoned-log section of [`global-plugins.md`](global-plugins.md) — and capture
+  *type*, per the poisoned-log section of [`docs/global-plugins.md`](../global-plugins.md) — and capture
   requires the rpcId as a second line of defence. Logs written before the fix still need repair by
   hand; nothing rewrites history.
 - **Branching a session truncates its history without saying so.** The `C7L - Flashback` rewind was
@@ -1282,9 +1544,9 @@ that genuinely exceeds the turn budget.
   `roll_monster_behavior`, and the table gained rows for `roll_check` and `roll_attack`.
 - **Dead weight, inventoried but deferred.** Collected while implementing the campaign prompt files and
   the roll unification; deliberately not mixed into that work. Four of the fifteen tables parsed out of
-  [`tables.json`](../plugins/dsh-dd35-preset/tables.json) are read by no tool — `boon_table.csv`,
+  [`tables.json`](../../plugins/dsh-dd35-preset/tables.json) are read by no tool — `boon_table.csv`,
   `bane_table.csv`, `dc_difficulty.csv`, `gm_moves.csv`. `renderActiveState()` in
-  [`state-store.js`](../plugins/dsh-dd35-preset/state-store.js) is exported and called from nowhere.
+  [`state-store.js`](../../plugins/dsh-dd35-preset/state-store.js) is exported and called from nowhere.
   And `search_reference` matches file *names* only, which the built-in `grep` strictly dominates for
   content search — that one is [FI-7](#fi-7--content-search-in-search_reference) seen from the other
   side, so fixing it is already on this list. (`state.houserules` was vestigial too and was removed
@@ -1313,3 +1575,20 @@ that genuinely exceeds the turn budget.
 - **Nothing in Part II should become a tool the model calls.** These are services the preset consults
   at turn boundaries. Exposing a classifier as a tool invites the DM to ask itself questions it has
   already answered, and adds a round-trip to something measured in milliseconds.
+- **FI-18/FI-19 are the exception to the rule above, and FI-20 is the confirmation of it.** The two
+  oracles are deliberately model-facing: asking for entropy is a choice the DM should be able to make
+  explicitly, and a random draw is the opposite of a classifier. FI-20 is the service form — it fires on
+  its own at a scene change precisely so that the model does not have to decide it wants inspiration.
+  Read together they are one design: manual when the DM wants a direction, automatic when it needs one.
+- **FI-16's cheaper fallback has now shipped, and it was not a fallback.** That item predicted
+  *"maintain an entity list from `update_scene`'s `entities` field and index turns by it, with no model at
+  all"* — and it noted the field would have to be relied upon. Measurement showed the opposite of what
+  that plan assumed: `- Entities:` is present in only **9 of 41** turns, because the DM rarely calls
+  `update_scene` with it. The shipped index instead derives presence from the prose, matching the entity
+  roster against the turn text, and labels the result `actor_source: "prose"` so a guess is never mistaken
+  for a record. See §12 of `memory-model.md`.
+- **FI-16/FI-14 assume a model call per turn; the shipped layer assumes zero.** The contextual index
+  (spec §12) delivers entity↔turn, co-occurrence and recency with no inference at all, which is why
+  FI-14 and FI-15 remain deferred: both providers configured in this deployment are external, so per-turn
+  inference is a recurring bill rather than a one-off cost. The evidence test for revisiting them is
+  written into §12.7 — wanting *"something like this but thematic"* is the signal, and nothing less.

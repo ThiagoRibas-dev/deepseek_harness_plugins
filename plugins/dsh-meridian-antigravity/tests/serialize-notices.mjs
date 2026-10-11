@@ -1,11 +1,24 @@
 /**
- * Regression test for notice filtering across a tool continuation.
+ * Regression test for the continuation prefix across a runtime-context refresh.
  *
  * Meridian requires each continuation's prefix to hash to the message list it
- * delivered. Dropping a superseded runtime-context snapshot rewrites that
- * prefix, so it may only happen on the request that starts a turn. This test
- * pins both halves: the turn-start request still filters, and a continuation
- * does not.
+ * delivered. The runtime-context snapshot is re-injected whenever the session's
+ * file or approval policy is restated, and it lands *before* the pending tool
+ * batch, so it moves that prefix.
+ *
+ * The connector used to filter superseded snapshots on the request that starts a
+ * turn and send a continuation verbatim. Each half was defensible; together they
+ * caused the failure, because the opener delivered a prefix without the superseded
+ * snapshot and the continuation put it back.
+ *
+ * Measured on a failing `dd35` turn by diffing the request captures: the snapshot
+ * was the ONLY difference between the opener and its continuation -- messages 0
+ * and 28, byte-identical once the snapshot was removed. Meridian answered
+ * `409 invalid_request_error: Pending Antigravity tool continuation changed its
+ * delivered history or tool batch`, and the turn was lost.
+ *
+ * So the snapshot never reaches the wire, and the property that matters is now
+ * asserted directly: a continuation's prefix is byte-identical to the opener's.
  *
  * Needs the module-resolution rig `tests/run.sh` builds.
  */
@@ -48,41 +61,45 @@ function texts(messages) {
   return messages.flatMap(m => (m.content ?? []).map(b => b.text ?? '')).join('\n')
 }
 
-// Turn start: only the newest snapshot is sent, as before.
-const start = texts(wire([
+// The snapshot never reaches the wire -- not on a turn start, and not on a
+// continuation. Sending it is what let the prefix move.
+const start = wire([
   snapshot('OLD SNAPSHOT'),
   player('hello'),
   assistant([]),
   snapshot('NEW SNAPSHOT'),
-]))
-assert.doesNotMatch(start, /OLD SNAPSHOT/, 'a turn start should still drop the superseded snapshot')
-assert.match(start, /NEW SNAPSHOT/)
+])
+assert.doesNotMatch(texts(start), /SNAPSHOT/, 'a runtime-context snapshot must not reach the wire')
 
-// Continuation, with a snapshot injected after the tool results. The prefix must
-// be byte-identical to what Meridian was delivered, so the old snapshot stays.
-const continuation = texts(wire([
-  snapshot('OLD SNAPSHOT'),
-  player('hello'),
-  assistant(['toolu_agy_aaaa']),
-  result('toolu_agy_aaaa'),
-  snapshot('NEW SNAPSHOT'),
-]))
-assert.match(continuation, /OLD SNAPSHOT/, 'a continuation must not rewrite the delivered prefix')
-assert.match(continuation, /NEW SNAPSHOT/, 'the fresh snapshot still rides along after the tool results')
-
-// Order matters: the fresh snapshot must come after the tool result, not before.
-const messages = wire([
+const continuation = wire([
   snapshot('OLD SNAPSHOT'),
   player('hello'),
   assistant(['toolu_agy_aaaa']),
   result('toolu_agy_aaaa'),
   snapshot('NEW SNAPSHOT'),
 ])
-const order = messages.map(m => (m.content ?? []).map(b => b.text).filter(Boolean).join(''))
-assert.ok(order.findIndex(t => /OLD SNAPSHOT/.test(t)) < order.findIndex(t => /NEW SNAPSHOT/.test(t)))
+assert.doesNotMatch(texts(continuation), /SNAPSHOT/, 'a continuation must not carry a snapshot either')
 
-// A trailing notice that names an ignored kind is likewise not removed from a
-// continuation, because removing it would move the prefix too.
+// The contract, stated directly: whatever the harness does to the snapshot
+// between the two requests, the continuation's prefix is the opener's wire.
+const opener = wire([snapshot('AS OF TURN 1'), player('hello')])
+for (const midTurn of ['AS OF TURN 1', 'AS OF TURN 2', '']) {
+  const next = wire([
+    ...(midTurn === '' ? [] : [snapshot(midTurn)]),
+    player('hello'),
+    assistant(['toolu_agy_aaaa']),
+    result('toolu_agy_aaaa'),
+  ])
+  assert.deepEqual(
+    next.slice(0, opener.length),
+    opener,
+    `a snapshot reading ${JSON.stringify(midTurn)} must not move the continuation prefix`,
+  )
+  assert.equal(next.length, opener.length + 2, 'the tool call and its result are the only additions')
+}
+
+// A trailing notice is still left alone on a continuation. Removing one of those
+// would move the prefix for the same reason the snapshot did.
 const withNotice = texts(wire([
   { role: 'user', content: [{ type: 'text', text: 'APPROVAL NOTICE' }], source: { kind: 'user-approval' } },
   player('hello'),

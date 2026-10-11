@@ -17,7 +17,7 @@ import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 /** One capture file name: sorts by time, then by identity. */
-const CAPTURE_NAME = /^\d{13,}-[^/\\]+\.json$/u
+export const CAPTURE_NAME = /^\d{13,}-[^/\\]+\.json$/u
 
 /**
  * The file name for one capture.

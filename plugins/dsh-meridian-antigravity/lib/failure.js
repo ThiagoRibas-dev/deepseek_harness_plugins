@@ -80,31 +80,58 @@ export function isAgentInterrupted(detail) {
   return AGENT_INTERRUPTED.test(String(detail ?? ''))
 }
 
+/** Collapse whitespace and cap a value so it fits one line of a notice or log. */
+function inline(text, limit) {
+  const flat = String(text ?? '').replace(/\s+/gu, ' ').trim()
+  return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat
+}
+
+/** `(status 409, request abc)`, from whatever of it is known. */
+function provenance(detail) {
+  const parts = []
+  if (Number.isInteger(detail?.status)) parts.push(`status ${detail.status}`)
+  const requestId = detail?.requestId
+  if (typeof requestId === 'string' && requestId.length > 0) parts.push(`request ${requestId}`)
+  return parts.length === 0 ? '' : ` (${parts.join(', ')})`
+}
+
 /**
  * The text committed when a continuation is refused because it no longer matches
  * the turn Meridian already delivered.
  *
  * Meridian's text for this 409 names three possible causes — the delivered
  * history, the tool batch, or the model and execution controls — and the
- * connector cannot tell which one moved, so the notice names them all rather
- * than asserting a rewrite it did not observe. The two that have been seen live
- * are a message rewritten after delivery (a tool-result prune or a compaction
- * between a tool call and its result) and a model change applied while a tool
- * batch was open. Committing this closes the turn, which is what the next
- * request needs.
+ * connector cannot tell which one moved, so it must not assert one. It must not
+ * invent one either: an earlier version of this notice opened with the tool-result
+ * pruner, and a survey of the `dd35` sessions found every conflict sitting in a
+ * session where the runtime-context snapshot had been rebuilt, with the pruner
+ * count not predicting the outcome at all. A canned cause list read as a finding
+ * and pointed at the wrong subsystem.
+ *
+ * So the notice quotes what Meridian actually said, carries the request id needed
+ * to ask it anything further, and lists the causes without ranking them. The only
+ * asserted claim is the one the capture diff can support: which message moved.
+ *
+ * Committing this closes the turn, which is what the next request needs.
  *
  * @param results - how many tool results the refused continuation carried, when known.
+ * @param detail - what is known: `provider` (Meridian's own words), `status`,
+ *   `requestId`, and `moved` (the message the capture diff caught changing).
  * @returns the notice text.
  */
-export function rewrittenContinuationNotice(results) {
+export function rewrittenContinuationNotice(results, detail = {}) {
   const batch = typeof results === 'number' && results > 0
     ? `This turn's batch of ${results} tool result${results === 1 ? '' : 's'} was delivered`
     : 'This turn\'s tool batch was delivered'
-  return `${NOTICE_PREFIX} ${batch}, but Meridian refused the continuation: what it had already`
-    + ' delivered no longer matches the request. That covers a message rewritten after delivery — by'
-    + ' the tool-result pruner, or by a compaction between a tool call and its result — and a model'
-    + ' change applied while a tool batch was open. This notice closes the turn so the conversation'
-    + ' can continue. Re-issue your last instruction; the work above is intact.'
+  const said = inline(detail?.provider, 320)
+  const moved = inline(detail?.moved, 200)
+  return `${NOTICE_PREFIX} ${batch}, but Meridian refused the continuation${provenance(detail)}: the`
+    + ' request no longer matched the history it had already delivered, so the turn was closed and no'
+    + ` reply was produced.${said.length > 0 ? ` Meridian said: "${said}".` : ''}`
+    + ' That history moves when the transcript changes between the tool call and its result: a rebuilt'
+    + ' snapshot message (the runtime context), a tool result pruned or compacted after delivery, or a'
+    + ` model change applied mid-batch.${moved.length > 0 ? ` What moved: ${moved}.` : ''}`
+    + ' Re-issue your last instruction; the work above is intact.'
 }
 
 /**

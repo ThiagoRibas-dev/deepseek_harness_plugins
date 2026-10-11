@@ -694,7 +694,12 @@ await test('a notice that is the whole turn is kept so the request still ends on
   assert.match(JSON.stringify(sent.messages.at(-1)), /approval policy changed/)
 })
 
-await test('only the newest runtime-context snapshot is sent', async () => {
+await test('no runtime-context snapshot is sent, the newest included', async () => {
+  // The snapshot is re-injected before a pending tool batch, so sending it moves
+  // the prefix Meridian pinned and loses the turn. Measured on a failing dd35 turn
+  // by diffing the request captures, it was the only difference between an opener
+  // and its continuation. So neither the current snapshot nor a superseded one is
+  // sent.
   const messages = [
     user('hello'),
     notice('runtime-context', 'Current runtime context. This snapshot supersedes earlier ones. policy ONE'),
@@ -702,8 +707,8 @@ await test('only the newest runtime-context snapshot is sent', async () => {
   ]
   await collect(runTurn(deps(connectionOf()), baseOptions({ messages })))
   const sent = JSON.stringify(state.requests.at(-1).body)
-  assert.ok(sent.includes('policy TWO'), 'the current snapshot must survive')
-  assert.ok(!sent.includes('policy ONE'), 'a superseded snapshot must be dropped')
+  assert.ok(!sent.includes('policy TWO'), 'even the current snapshot must not be sent')
+  assert.ok(!sent.includes('policy ONE'), 'a superseded snapshot must not be sent')
 })
 
 await test('notices that carry something to act on are kept', async () => {
@@ -726,7 +731,11 @@ await test('notices that carry something to act on are kept', async () => {
   }
 })
 
-await test('the drop policy can be disabled entirely', async () => {
+await test('the runtime-context exclusion is not configurable away', async () => {
+  // `keepLatestRuntimeContext` has nothing left to keep: sending a snapshot at all
+  // is what moves a continuation prefix, so neither the drop policy nor an empty
+  // ignore list may put one back on the wire. Other notice kinds still follow the
+  // policy, which is what the option continues to govern.
   const messages = [
     user('hello'),
     notice('model-selection', 'MODEL SWITCH NOTICE'),
@@ -736,9 +745,9 @@ await test('the drop policy can be disabled entirely', async () => {
   const connection = connectionOf({ ignoredNoticeKinds: [], keepLatestRuntimeContext: false })
   await collect(runTurn(deps(connection), baseOptions({ messages })))
   const sent = JSON.stringify(state.requests.at(-1).body)
-  assert.ok(sent.includes('MODEL SWITCH NOTICE'))
-  assert.ok(sent.includes('policy ONE'))
-  assert.ok(sent.includes('policy TWO'))
+  assert.ok(sent.includes('MODEL SWITCH NOTICE'), 'other kinds still follow the drop policy')
+  assert.ok(!sent.includes('policy ONE'), 'a snapshot is not restored by disabling the policy')
+  assert.ok(!sent.includes('policy TWO'), 'a snapshot is not restored by disabling the policy')
 })
 
 await test('the filter removes only the configured kinds and keeps the rest in order', async () => {
