@@ -941,10 +941,13 @@ dependency inside the plugin.
 
 - `onnxruntime-node` is native with install scripts. `plugin_manager install_bundle` surfaces it in
   `pendingBuilds` and needs explicit approval — a supply-chain decision, not a formality.
+- **Runtime trade-offs: `@huggingface/transformers` vs. standalone `onnxruntime-node`**:
+  - `@huggingface/transformers`: provides out-of-the-box tokenization (critical for Gemma's 262,144-token vocabulary and SentencePiece) and handles task-prefix pipelines automatically. Setting `config.vision_config = config.audio_config = null` before loading prevents downloading unwanted multimodal weights. However, it pulls in native dependencies like `sharp` (which global plugins explicitly worked to avoid in phase 6).
+  - Standalone `onnxruntime-node`: completely avoids `sharp` and third-party runtime bloat, running lean ONNX sessions directly. However, tokenization for Gemma's 262k vocabulary must be implemented or wired through a lightweight tokenizer library or pre-tokenized inputs.
 - **The download is the cost, and it is ours to control.** fp32 is 1.61 GiB / ~2 GB RSS; INT8 is ~324 MB / ~0.4 GB
   RSS. Quantizing removes roughly 80% of both, so the "1.7 GB objection" is really a question of whether the
   one-time Python step gets done. On a memory-constrained host without that step, only the small encoders
-  (FI-14/FI-15, tens of MB) are viable and Laya should be dropped — that combination still delivers most of the
+  (FI-14/FI-15, tens of MB) or quantized text backbones are viable and Laya should be dropped — that combination still delivers most of the
   value.
 - **Pin the revision to a commit SHA and pin the checksum.** An unpinned `main` makes a campaign's recorded
   decisions irreproducible, which defeats the point of recording them, and a checksum mismatch is the only signal
@@ -981,6 +984,13 @@ stalled?" are all cheap typed questions currently either answered by the main mo
 | Does this turn leave something for the oracle to decide? | `noul` | enforces the persona's oracle discipline |
 | How hostile is this NPC right now? | `score` (0–4) | dialogue tone, feeding `roll_monster_behavior` |
 | Has this scene stalled? | `score` | pacing; prompts the DM to escalate |
+
+### Tiered classifier architecture: embedding exemplars before Laya
+
+Not every typed question needs Laya's multi-variable joint pass. We adopt a two-tier strategy:
+
+1. **Tier 1 — Example-based embedding classifier (nearest centroid / k-NN)**: For questions that depend purely on the user's input phrasing (e.g., rules question vs. declared action vs. OOC banter, or basic mode cues), compute cosine similarity against a small set of pre-embedded anchor exemplars using the primary text encoder (FI-14). This requires zero additional model weights beyond the embedder, runs in sub-millisecond time, and avoids spinning up Laya when an embedding lookup suffices.
+2. **Tier 2 — Laya (Joint System 1 decision model)**: Retained for complex state-dependent adjudications where state context and rubric questions interact (e.g. `noul("does this turn leave something for the oracle to decide?")`, pacing/stall scoring given encounter progress, or NPC hostility given scene stakes).
 
 ### Design rules
 
@@ -1098,11 +1108,15 @@ Both are embeddings.
 
 ### The model
 
-A small sentence encoder — `all-MiniLM-L6-v2` class, 22M parameters, 384 dimensions, tens of MB quantized. Note
-this is **roughly two orders of magnitude smaller than Laya** and the one piece of this section that survives a
-memory-constrained host. Retrieval is brute-force cosine over a flat index: 5,600 files at 384 dims is a few MB of
-float32, and an exact scan is microseconds. No vector database is warranted and adding one would be the kind of
-premature infrastructure this backlog exists to avoid.
+The primary encoder is **`onnx-community/embeddinggemma-2-ONNX`** (pinned commit `daa72c51243991dfcaf9f9137d2c573d8f7790c0`, Apache-2.0 license).
+
+- **Architecture & Footprint**: 740M total parameters with a modular structure: 270M text backbone (130M transformer + 140M embedder), 170M vision, and 300M audio. By setting `config.vision_config = config.audio_config = null` prior to model instantiation, only the text weights are downloaded and loaded (`model_q4f16.onnx_data` at 156 MB or `model_quantized.onnx_data` q8 at 313 MB).
+- **Context & Representation**: 8,192 token context window (enabling whole-scene or long passage retrieval without lossy truncations) into a unified 768-dimensional space.
+- **Matryoshka Representation Learning (MRL)**: Natively trained for prefix-slicing down to 512, 256, or 128 dimensions (with L2 re-normalization). Truncating to 256-d or 512-d yields a 1.5–3× storage and cosine scan speedup with negligible accuracy loss (68.41 @ 512-d vs. 68.46 @ 768-d on MTEB v2).
+- **Task-Steered Prefixes**: Uses explicit task instruction prefixes: asymmetric search queries use `task: search result | query: <text>`, corpus documents use `title: {title|none} | text: <text>`, and classification uses `task: classification | query: <text>`.
+- **Fallback**: **`all-MiniLM-L6-v2`** (22M parameters, 384 dimensions, ~22 MB quantized) is retained as the fallback option for resource-constrained hosts where RAM or disk footprint strictly rules out Gemma.
+
+Retrieval is brute-force cosine over a flat index or SQLite float16 BLOBs: an exact scan over thousands of vectors takes microseconds. No external vector database is warranted; flat arrays or SQLite BLOBs fully suffice.
 
 ### Two indexes, two jobs
 
@@ -1216,9 +1230,9 @@ not suspect, and cannot check a contradiction it has forgotten making.
 
 ### Threshold discipline
 
-A fixed cosine threshold will be wrong in both directions. Calibrate on the campaign's own turns, and **start by
-recording the nearest neighbours in the turn record rather than interrupting the turn** — build the measurement,
-read it, then decide whether it is worth acting on.
+A fixed cosine threshold will be wrong in both directions across different registers and turn lengths. Borrowing DigUp's score calibration pattern, normalize candidate similarities by calculating the z-score ($\frac{s - \mu}{\sigma}$) over the distribution of turn similarities for the query. A statistical candidate threshold ($z \ge 2.0$, or roughly two standard deviations above the corpus mean) provides an adaptive, query-calibrated gate rather than an arbitrary raw cosine cutoff.
+
+**Start by recording the nearest neighbours and z-scores in the turn record rather than interrupting the turn** — build the measurement, read it in real play, then decide whether it is worth acting on.
 
 ---
 

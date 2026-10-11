@@ -47,6 +47,7 @@ export const STRIPPED_TOOLS = Object.freeze([
   'ask_oracle', 'consult_oracle',
   'draw_keyword', 'draw_focus', 'draw_muse_prompt', 'roll_monster_behavior',
   'generate_plot_hook', 'generate_npc', 'explore_dungeon_room', 'explore_hex',
+  'generate_character_name', 'generate_place_name',
 
   // Mutations: the effect is on the sheet, so the echo is a duplicate.
   'apply_damage', 'heal', 'apply_condition', 'remove_condition', 'tick_conditions',

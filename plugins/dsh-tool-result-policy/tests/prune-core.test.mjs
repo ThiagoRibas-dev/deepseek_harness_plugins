@@ -260,3 +260,14 @@ test('a plan is a pure description: planning alone changes nothing', () => {
   assert.deepEqual(session.appended, [])
   assert.equal(session.eventAt(100).data.message.content[0].text.length, 500)
 })
+
+test('strips newly added name generator tools', () => {
+  const session = makeSession({
+    calls: [['c1', 'generate_character_name'], ['c2', 'generate_place_name']],
+    results: [['c1', bigText(200)], ['c2', bigText(200)]],
+  })
+  const plan = planPrune(session, { strip: true })
+  assert.equal(plan.length, 2)
+  assert.equal(plan[0].action, 'strip')
+  assert.equal(plan[1].action, 'strip')
+})
