@@ -1,0 +1,17 @@
+# Bundle patch for @local/dsh-model-rotation.
+#
+# One Host-plane row owns the adapter route, the settings namespace, the
+# per-session request log, and the HTTP read surface the right-pane tab polls.
+# The client half registers a settings page and a per-session tab.
+#
+# `pools` is the volatile settings field: the settings page writes it through
+# the standard settings remote, and the adapter re-reads it per request. It is
+# deliberately empty here so a fresh install starts dormant, exactly like a
+# bare `llm-pi-ai` mount with no providers.
+- insert:
+    - id: model-rotation
+      name: '@local/dsh-model-rotation'
+      config:
+        provider: model-rotation
+        displayName: Model Rotation
+        pools: {}

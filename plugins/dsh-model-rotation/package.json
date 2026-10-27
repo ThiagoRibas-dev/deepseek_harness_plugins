@@ -1,0 +1,41 @@
+{
+  "name": "@local/dsh-model-rotation",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Rotating model API connector for DeepSeek Harness: named pools of hostname + API key + model endpoints, rotated per request or per turn with failover, cooldown, and a per-session request log.",
+  "meta": {
+    "title": "Model Rotation",
+    "description": "Pools of OpenAI/Anthropic-compatible endpoints with rotation rules, failover, and a per-session request log."
+  },
+  "main": "plugin.js",
+  "exports": {
+    ".": "./plugin.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-api-remotes"
+      ],
+      "external": [
+        "react"
+      ]
+    }
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-llm-pi-ai": "*",
+    "@deepseek-ai/schemastery": "*",
+    "@earendil-works/pi-ai": "*"
+  }
+}
