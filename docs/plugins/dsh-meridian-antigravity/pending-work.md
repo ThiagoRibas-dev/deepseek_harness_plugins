@@ -104,3 +104,64 @@ shaped; the harness never needed editing for it.
 |---|---|
 | `agy` 1.4.8 | only after item 1 is green; one variable per restart; re-verify the `brain/` layout, marker format and tool bridge |
 
+
+### Item 2, first attempt (2026-10-29) — provisional ratio, join key unsolved
+
+`tmp/meridian/prompt-ratio.mjs` pairs a capture with the CLI's own record of the prompt. Three captures
+matched, all to the same brain, all showing the same prompt length:
+
+```
+body 267,540 bytes → prompt 191,999 chars   ratio 0.718
+body 267,134 bytes → prompt 191,999 chars   ratio 0.719
+body 265,308 bytes → prompt 191,999 chars   ratio 0.724
+```
+
+Two findings:
+
+1. **191,999 is the cap itself.** A prompt of that length is what `agy` keeps of a larger step, so those
+   dispatches were truncated.
+2. **Provisional: prompt bytes ≈ 0.72 × body bytes.** Inverted, a 190,000-byte prompt corresponds to a body
+   of ~264,000 bytes.
+
+Why the pairing is not yet trustworthy: three dispatches resolved to one brain, so the fingerprint matched
+common text rather than the turn. Raising the needle to 140 characters and requiring a unique match found
+nothing, because the prompt record stores what was **kept**, and a truncated prompt cannot contain a
+fingerprint from the part that was dropped. The ratio is therefore indicative, not measured.
+
+**Fingerprint matching is the wrong join.** Use `ag_state`: a capture carries `meridian_session_key`, and
+`MERIDIAN_AGY_STATE_PATH` (`/root/.local/state/meridian/antigravity.sqlite`) holds Meridian's conversation
+mapping. Reading it while the service runs is fine through the WAL.
+
+### Item 2, resolved join (2026-10-29)
+
+Fingerprints were the wrong tool. `antigravity.sqlite` holds the join:
+
+| Table | Columns | Use |
+|---|---|---|
+| `exchanges` | `id` (a `msg_agy_…` request id), `json.timestamp`, `json.durationMs`, `json.conversationId`, `json.continuation` | one row per request; `timestamp` aligns with a capture's `time` to within 0.2 s |
+| `native-sessions` | `id` (64 hex, *not* `sha256(session_key)`), `json.conversationId`, `json.count` | conversation bookkeeping |
+| `native` | `id`, `json.name`, `json.state` | per-tool native outcomes |
+
+`json.conversationId` is the brain directory name, so the join is:
+
+```
+capture.time ≈ exchanges.timestamp  →  conversationId  →  brain/<conversationId>/transcript_full.jsonl
+```
+
+Six consecutive captures in one conversation (`1b0e098e-…`) aligned at Δ ≤ 0.2 s, all `continuation:
+tool-result`, durations 4.6–21.1 s.
+
+**Measured pair:** body 270,285 bytes → stored prompt **174,944 chars**, ratio **0.647**.
+
+`transcript_full.jsonl` keeps only the newest prompt per conversation, so a capture must be paired with the
+prompt written *after* it. For this conversation the prompt stayed under the 191,999 keep limit, i.e. it was
+**not** truncated — the ratio is what Meridian builds, not what `agy` keeps.
+
+Consequences:
+
+- **Cap in body terms:** 191,999 ÷ 0.647 ≈ **297,000 bytes**. Bodies at 261–270 KB are close; the 420,887-byte
+  dispatch in the capture ring is well past it and was certainly truncated.
+- `transcript.jsonl` is the condensed copy and inflates the number of markers; read `transcript_full.jsonl`
+  for prompt lengths.
+- `exchanges.json.durationMs` is a better latency measure than the session store, and `continuation` says
+  whether a request reused the live process.
