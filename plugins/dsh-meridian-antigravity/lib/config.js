@@ -12,6 +12,7 @@
 
 import z from '@deepseek-ai/schemastery'
 import { isVolatile } from '@deepseek-ai/cosmokit'
+import { DEFAULT_PROMPT_BUDGET, resolvePromptBudget } from './budget.js'
 import { resolveRetryPolicy, RetryPolicySchema } from '@deepseek-ai/dsh-llm'
 
 /** Default provider route registered on the harness `llm` service. */
@@ -161,6 +162,30 @@ export const Config = z.object({
   defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW).volatile(),
   defaultMaxTokens: z.number().step(1).min(1).default(DEFAULT_MAX_TOKENS).volatile(),
   maxRequestBytes: z.number().step(1).min(1).default(DEFAULT_MAX_REQUEST_BYTES).volatile(),
+  /**
+   * Pre-dispatch prompt budget, in whatever unit the deployment wants to express
+   * it. Every number here is configuration rather than code, so the limit, the
+   * unit and the body-to-prompt conversion can be changed from the settings UI
+   * without a code change. See `docs/plugins/dsh-meridian-antigravity/prompt-budget.md`.
+   *
+   * `enabled: false` restores the previous behaviour: no local check, whatever the
+   * provider does with an oversized prompt.
+   */
+  promptBudget: z.object({
+    enabled: z.boolean().default(true),
+    /** `bytes`, `chars` or `tokens`. Applies to both `limit` and the measurement. */
+    unit: z.union(['bytes', 'chars', 'tokens']).default('bytes'),
+    /** `estimate` converts the body with `ratio`; `body` compares the body directly. */
+    measure: z.union(['estimate', 'body']).default('estimate'),
+    /** Budget in `unit`. 190,000 is Meridian's documented default for the CLI cap. */
+    limit: z.number().step(1).min(0).default(190_000),
+    /** Body bytes to prompt bytes. Measured at 0.647 on 2026-10-29. */
+    ratio: z.number().step(0.001).min(0.01).max(10).default(0.647),
+    /** Bytes per token, used only when `unit` is `tokens`. */
+    charsPerToken: z.number().step(1).min(1).default(4),
+    /** Headroom held back below `limit`, as a fraction. */
+    margin: z.number().step(0.01).min(0).max(0.9).default(0.05),
+  }).default(DEFAULT_PROMPT_BUDGET).volatile(),
   maxImagesPerRequest: z.number().step(1).min(1).default(64).volatile(),
   maxConcurrentTurns: z.number().step(1).min(1).default(DEFAULT_MAX_CONCURRENT_TURNS).volatile(),
   streamIdleTimeoutMs: z.number().step(1).min(1).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS).volatile(),
@@ -285,6 +310,7 @@ export function resolveOptions(config, environment = process.env) {
     defaultContextWindow: defaults.contextWindow,
     defaultMaxTokens: defaults.maxTokens,
     maxRequestBytes: plain.maxRequestBytes ?? DEFAULT_MAX_REQUEST_BYTES,
+    promptBudget: resolvePromptBudget(plain.promptBudget),
     maxImagesPerRequest: plain.maxImagesPerRequest ?? 64,
     maxConcurrentTurns: plain.maxConcurrentTurns ?? DEFAULT_MAX_CONCURRENT_TURNS,
     streamIdleTimeoutMs: plain.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS,

@@ -15,6 +15,7 @@ import { batchSpent, meridianErrorDetail, meridianErrorFromText, streamInterrupt
 import {
   blockedReplyNotice, isSpentBatch, rewrittenContinuationNotice, spentBatchNotice,
 } from './failure.js'
+import { describePromptBudget, measurePrompt } from './budget.js'
 import { enforceRequestBudget, serializeRequest } from './serialize.js'
 import { writeCapture } from './capture.js'
 import { describeMovedMessage } from './diagnostics.js'
@@ -121,6 +122,19 @@ async function* runTurnAttempt(dependencies, options) {
   }
   const streamingBody = { ...body, stream: true }
   const size = enforceRequestBudget({ body: streamingBody, retained }, connection)
+  // The provider keeps the head of a prompt and drops the tail, which is where the
+  // newest message sits. Refuse the dispatch here instead -- with the code the
+  // harness compacts in response to -- rather than let the request arrive and
+  // quietly lose the message the user just sent.
+  const budget = measurePrompt({ bodyBytes: size, budget: connection.promptBudget })
+  if (budget.exceeded) {
+    logger?.warn?.(`meridian-antigravity: ${describePromptBudget(budget)}; refusing the dispatch`)
+    throw new LlmError(
+      `Meridian Antigravity prompt is too large: ${describePromptBudget(budget)}`,
+      'CONTEXT_WINDOW_EXCEEDED',
+      { bodyBytes: size, estimated: budget.value, unit: budget.unit, limit: budget.limit },
+    )
+  }
   const hash = logicalRequestHash(body, scope)
   const identity = ledger.begin(hash)
   const headers = Object.freeze({

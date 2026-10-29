@@ -26,22 +26,18 @@ number — only the assumption that they are close.
 
 Accept: a table of three dispatches with body bytes, prompt chars, and the ratio.
 
-## 3. Connector: byte-aware prompt budget
+## 3. Connector: prompt budget — **implemented 2026-10-29**
 
-New `lib/budget.js`, called before dispatch:
+`lib/budget.js` measures the serialized body in a configurable unit and refuses the dispatch with
+`CONTEXT_WINDOW_EXCEEDED` when it exceeds the budget, which is the code `compaction-basic` compacts and
+retries on. Every number — unit, limit, ratio, `charsPerToken`, margin, and an off switch — comes from the
+`promptBudget` row config, so the units can change from the settings UI without a code change. Spec and the
+measurement behind the ratio: [`prompt-budget.md`](prompt-budget.md).
 
-```
-serialize → estimate prompt bytes (body × ratio) → over cap?
-         → throw CONTEXT_WINDOW_EXCEEDED  → compaction-basic compacts, retries once
-         → still over → surface a real failure (no loop)
-```
+Tests: four checks in `tests/spent-batch.mjs` (each unit, the margin, `measure: body`, `enabled: false`, and
+an over-budget turn that dispatches nothing). Suite 36 checks, 0 failures.
 
-- Cap from config defaulting to the release's `MERIDIAN_AGY_MAX_PROMPT_BYTES` (190,000). Never hard-code it:
-  it did not exist in 1.81.0 and arrived in 1.83.0.
-- Depends on 1.83.1 #1388, which preserves context-overflow signals for client compaction.
-- No trimming in the connector: that recreates the silent loss being removed.
-- Tests: over-cap → `CONTEXT_WINDOW_EXCEEDED`; under-cap → wire byte-identical to today; second consecutive
-  failure surfaces; threshold threaded through config.
+Still open: the threshold has not fired on a live turn, and the ratio rests on a single pair.
 
 ## 4. Loop report tool
 

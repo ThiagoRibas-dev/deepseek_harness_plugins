@@ -33,6 +33,7 @@ const { MeridianContract } = await import('../lib/contract.js')
 const { TurnLedger } = await import('../lib/idempotency.js')
 const { TurnGate } = await import('../lib/limiter.js')
 const { runTurn } = await import('../lib/transport.js')
+const { measurePrompt, resolvePromptBudget } = await import('../lib/budget.js')
 
 /** Verbatim from the live failure, and from the `exchanges` row it produced. */
 const FILTER_DETAIL = 'Your previous response was blocked by content safety filters: The model output'
@@ -872,6 +873,66 @@ await check('capture is off by default and writes the dispatched body when on', 
     rmSync(dir, { recursive: true, force: true })
     assert.equal(existsSync(dir), false)
   }
+})
+
+await check('the prompt budget measures in the unit it is configured with', async () => {
+  // Every number is configuration: the same body can be judged in bytes, chars or
+  // tokens, and the conversion from body to prompt is a ratio rather than code.
+  const body = 300_000
+  const bytes = measurePrompt({ bodyBytes: body, budget: resolvePromptBudget({ limit: 190_000, margin: 0 }) })
+  assert.equal(bytes.value, 194_100, '300000 * 0.647')
+  assert.equal(bytes.exceeded, true, 'over the 190000-byte limit')
+
+  const generous = measurePrompt({ bodyBytes: body, budget: resolvePromptBudget({ limit: 200_000, margin: 0 }) })
+  assert.equal(generous.exceeded, false, 'the same body fits a larger limit')
+
+  const tokens = measurePrompt({
+    bodyBytes: body,
+    budget: resolvePromptBudget({ limit: 40_000, unit: 'tokens', charsPerToken: 4, margin: 0 }),
+  })
+  assert.equal(tokens.value, 48_525, '194100 / 4')
+  assert.equal(tokens.exceeded, true, 'over a 40000-token limit')
+
+  const chars = measurePrompt({ bodyBytes: body, budget: resolvePromptBudget({ limit: 190_000, unit: 'chars', margin: 0 }) })
+  assert.equal(chars.unit, 'chars')
+  assert.equal(chars.value, bytes.value, 'chars and bytes share a number')
+})
+
+await check('the margin holds headroom below the limit', async () => {
+  const tight = measurePrompt({ bodyBytes: 270_000, budget: resolvePromptBudget({ limit: 190_000, margin: 0 }) })
+  assert.equal(tight.value, 174_690)
+  assert.equal(tight.exceeded, false)
+  const withMargin = measurePrompt({ bodyBytes: 270_000, budget: resolvePromptBudget({ limit: 180_000, margin: 0.05 }) })
+  assert.equal(withMargin.effectiveLimit, 171_000, '5% of 180000 is held back')
+  assert.equal(withMargin.exceeded, true, 'a body that fits the limit can fail the effective one')
+})
+
+await check('body measuring skips the ratio, and a disabled budget never fires', async () => {
+  const direct = measurePrompt({ bodyBytes: 300_000, budget: resolvePromptBudget({ measure: 'body', limit: 250_000, margin: 0 }) })
+  assert.equal(direct.value, 300_000, 'no conversion applied')
+  assert.equal(direct.exceeded, true)
+
+  const off = measurePrompt({ bodyBytes: 10_000_000, budget: resolvePromptBudget({ enabled: false }) })
+  assert.equal(off.exceeded, false, 'a disabled budget cannot refuse a dispatch')
+})
+
+await check('an over-budget request is refused before dispatch', async () => {
+  // The code matters: compaction-basic reacts to CONTEXT_WINDOW_EXCEEDED by
+  // compacting and retrying, so the refusal has to carry exactly that.
+  state.mode = null
+  state.script = ['answer']
+  state.bodies = []
+  const small = deps({ promptBudget: { limit: 10, margin: 0 } })
+  let error
+  try {
+    await collect(runTurn(small, options(continuation(), { sessionId: 'session-budget' })))
+  } catch (thrown) {
+    error = thrown
+  }
+  assert.ok(error, 'the turn must fail rather than dispatch an oversized prompt')
+  assert.equal(error.code, 'CONTEXT_WINDOW_EXCEEDED', 'the harness compacts on this code')
+  assert.match(error.message, /estimated prompt .* against an effective limit/)
+  assert.equal(state.bodies.length, 0, 'nothing reached the provider')
 })
 
 server.close()
