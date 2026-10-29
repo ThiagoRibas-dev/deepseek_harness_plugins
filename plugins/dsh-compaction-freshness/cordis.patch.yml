@@ -1,0 +1,20 @@
+# Bundle patch for @local/dsh-compaction-freshness.
+#
+# One host-plane row, inserted rather than overriding anything. Session events
+# bubble to ancestor contexts, so a listener registered here sees every agent,
+# including preset-scoped ones — no per-preset mount, and do not add one.
+#
+# A refresh is one summarisation call (measured ~69k input tokens, ~30 s), so it
+# is a deployment cost decision: mount this row only where that spend is wanted.
+# Spec: docs/plugins/compaction-freshness.md.
+- insert:
+    - id: compaction-freshness
+      name: '@local/dsh-compaction-freshness'
+      config:
+        # Messages the checkpoint has not seen before a refresh is owed. The
+        # measured freeze was 6 turns / 22 messages; 40 is deliberately later.
+        refreshAfterMessages: 40
+        # Never twice within five minutes.
+        cooldownMs: 300000
+        # Hard cap per session.
+        maxRefreshes: 3

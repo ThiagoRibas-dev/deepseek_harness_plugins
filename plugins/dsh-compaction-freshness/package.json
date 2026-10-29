@@ -1,0 +1,22 @@
+{
+  "name": "@local/dsh-compaction-freshness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Refresh a stale compaction checkpoint once the agent is idle",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./policy": "./policy.js",
+    "./package.json": "./package.json"
+  },
+  "meta": {
+    "title": "Compaction Freshness",
+    "description": "Refreshes a stale compaction checkpoint while the agent is idle, so the model stops answering an older state."
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

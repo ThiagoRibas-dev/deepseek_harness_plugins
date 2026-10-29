@@ -96,8 +96,15 @@ function provenance(detail) {
 }
 
 /**
- * The text committed when a continuation is refused because it no longer matches
- * the turn Meridian already delivered.
+ * The notice text for a continuation refused because it no longer matches the
+ * turn Meridian already delivered.
+ *
+ * The transport does not currently commit this text: `runTurn` answers a refusal
+ * with one recovery retry that appends the missing assistant turn, which makes
+ * the retried request an ordinary call and drops it out of continuation detection
+ * entirely. A refusal that survives the retry is reported as an error. The
+ * builder and its tests are kept so this notice can be restored unchanged if a
+ * fallback that commits it is reinstated.
  *
  * Meridian's text for this 409 names three possible causes — the delivered
  * history, the tool batch, or the model and execution controls — and the

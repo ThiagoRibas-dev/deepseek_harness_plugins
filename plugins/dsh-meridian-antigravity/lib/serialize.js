@@ -36,6 +36,31 @@ class RetainedImage {
 /** The one notice kind whose older copies each say they are superseded. */
 const RUNTIME_CONTEXT_KIND = 'runtime-context'
 
+/** Source kind of a landed compaction checkpoint. */
+const CHECKPOINT_KIND = 'compact-checkpoint'
+
+/** Opens the summary body; everything before it is checkpoint framing. */
+const SUMMARY_TAG = '<compacted-summary>'
+
+/**
+ * Replacement framing for a checkpoint, applied identically to every request.
+ *
+ * The harness's own preamble says "treat the captured context as established
+ * background… continue the task directly from the messages that follow", which
+ * reads as authority for the checkpoint itself. A checkpoint whose `## Next Step`
+ * said "await user selection" then outlived its trigger: measured on
+ * `session-d772c4cf`, where three requests were answered from a checkpoint 19
+ * hours stale instead of from the newest user message.
+ *
+ * Replacing text already in the transcript is safe where injecting a new notice is
+ * not: the transform is a pure function of the stored message, so an opener and its
+ * continuation produce identical bytes and a pinned prefix never moves.
+ */
+const CHECKPOINT_FRAMING = 'This is an automatically generated checkpoint condensing an earlier span of'
+  + ' the conversation. It describes an earlier state: the messages after it supersede it, and the most'
+  + ' recent user message defines the task. Do not re-offer a choice the conversation has already'
+  + ' settled. Do not acknowledge this checkpoint.'
+
 /**
  * Drop injected user-role notices the process cannot act on.
  *
@@ -76,6 +101,29 @@ export function filterNoticeMessages(messages, { ignoredKinds = [], keepLatestRu
 }
 
 /** The producer kind recorded on a message, or undefined when it carries none. */
+/**
+ * Rewrite a checkpoint's framing, keeping its summary body byte-identical.
+ *
+ * A message that is not a checkpoint, or whose body carries no summary tag, is
+ * returned unchanged — the same object, so nothing downstream sees a new identity.
+ *
+ * @param message - one harness message.
+ * @returns the message to put on the wire.
+ */
+function reframeCheckpoint(message) {
+  if (message?.role !== 'user' || sourceKindOf(message) !== CHECKPOINT_KIND) return message
+  const content = Array.isArray(message.content) ? message.content : []
+  const index = content.findIndex(
+    block => block?.type === 'text' && typeof block.text === 'string' && block.text.includes(SUMMARY_TAG),
+  )
+  if (index === -1) return message
+  const block = content[index]
+  const body = block.text.slice(block.text.indexOf(SUMMARY_TAG))
+  const next = [...content]
+  next[index] = { ...block, text: `${CHECKPOINT_FRAMING}\n\n${body}` }
+  return { ...message, content: next }
+}
+
 function sourceKindOf(message) {
   const kind = message?.source?.kind
   return typeof kind === 'string' && kind.length > 0 ? kind : undefined
@@ -129,28 +177,48 @@ export function serializeRequest({ options, connection, images, imageAccess, war
 
   // Read from the harness messages rather than the wire messages, because the
   // assistant message that issued a tool call carries its provider there. It
-  // serves two purposes: gating the notice filter below, and explaining a
-  // failure. See lib/continuation.js.
+  // serves two purposes: explaining a failure, and answering "does this request
+  // present tool results". See lib/continuation.js.
   const continuation = analyzeContinuation(options.messages)
 
   // Injected state notices are not model input: they describe harness state the
   // process cannot act on, and DSH appends them after the player's own message.
   //
-  // The filter runs only on the request that starts a turn. A continuation sends
-  // the history verbatim, because filtering it would move the prefix Meridian
-  // pinned -- the superseded-snapshot question is settled before the wire now, so
-  // there is nothing left for a continuation to filter.
-  const { messages: history, dropped } = continuation === undefined
-    ? filterNoticeMessages(options.messages, {
-      ignoredKinds: connection.ignoredNoticeKinds,
-      keepLatestRuntimeContext: connection.keepLatestRuntimeContext,
-    })
-    : { messages: options.messages, dropped: [] }
+  // The filter runs on **every** request. It used to run only on the one that
+  // starts a turn, on the reasoning that a continuation must send history verbatim
+  // so filtering it would move the prefix Meridian pinned. That reasoning is
+  // backwards: it makes the opener and its continuation disagree, which is the one
+  // thing the contract will not tolerate, and it is what a message that is dropped
+  // from one and kept in the other does by construction.
+  //
+  // Measured on `session-857354e7` (`Review Unstaged Git Files`), turns 8 and 9:
+  // five consecutive refusals, each costing one extra dispatch, where the refused
+  // body differed from the accepted one it replaced by exactly one block -- the
+  // `model-selection` notice, dropped by the opener and sent by the continuation.
+  // The model then answered under the recovery instruction rather than the user's
+  // request. Full entry: `docs/lessons-learned.md` §3.3.
+  //
+  // The decision is content-based, never positional, so it cannot flip between a
+  // request and its own continuation. The one case that keeps a notice is a request
+  // with no player message at all: dropping it there would leave nothing to answer.
+  const hasPlayerTurn = options.messages.some(
+    message => message?.role === 'user' && sourceKindOf(message) === 'user',
+  )
+  const { messages: history, dropped } = filterNoticeMessages(options.messages, {
+    ignoredKinds: hasPlayerTurn ? connection.ignoredNoticeKinds : [],
+    keepLatestRuntimeContext: connection.keepLatestRuntimeContext,
+  })
   const tools = resolveTools(options, connection)
   const effort = resolveEffort(options)
   const system = collectSystem(options)
   const retained = []
-  const built = buildMessages({ options: { ...options, messages: history }, connection, images, imageAccess, retained })
+  const built = buildMessages({
+    options: { ...options, messages: history.map(reframeCheckpoint) },
+    connection,
+    images,
+    imageAccess,
+    retained,
+  })
   restoreTrailingNotice(built, dropped)
   const stop = resolveStop(options.stop)
 

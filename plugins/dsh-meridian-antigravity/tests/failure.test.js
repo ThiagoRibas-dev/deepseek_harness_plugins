@@ -84,8 +84,9 @@ test('a consumed batch is recognised as spent', () => {
 })
 
 test('the transcript-rewrite conflict is NOT a spent batch', () => {
-  // The two share a 409 and must not share a response: one can be repaired by
-  // standing in for a missing reply, the other means the history itself moved.
+  // The two share a 409 and must not share a response: the transcript rewrite is
+  // answered by the one recovery retry, while a spent batch ends in the notice
+  // that stands in for the missing reply.
   assert.equal(isSpentBatch(REWRITE_DETAIL), false)
   assert.equal(isSpentBatch('Meridian Antigravity stream ended before message_stop'), false)
   assert.equal(isSpentBatch(undefined), false)

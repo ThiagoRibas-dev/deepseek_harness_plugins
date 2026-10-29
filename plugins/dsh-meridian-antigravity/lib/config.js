@@ -29,9 +29,14 @@ const BASE_URL_ENV = 'MERIDIAN_BASE_URL'
 /**
  * The validated backend and CLI pin this connector was written against. A
  * different value is an operator error, never a retryable condition.
+ *
+ * `1.3.4` is what Meridian 1.81.0 reports as `support.verifiedCliVersion` once
+ * its Antigravity gate is widened to accept agy 1.3.4 (`meridian/LOCAL-PATCHES.md`,
+ * branch `local/agy-1.3.4-compat`). The gate is the host's contract, so this pin
+ * follows it rather than the upstream default of `1.2.7`.
  */
 export const CONTRACT_BACKEND = 'antigravity'
-export const CONTRACT_CLI_VERSION = '1.2.7'
+export const CONTRACT_CLI_VERSION = '1.3.4'
 
 /**
  * Meridian caps a whole Messages request body at 8 MiB, base64 included. The
@@ -179,6 +184,21 @@ export const Config = z.object({
    */
   repairSpentBatch: z.boolean().default(true).volatile(),
   /**
+   * How the `meridian_session_key` is chosen.
+   *
+   * `pinned` (the default) sends the harness session id, so Meridian reuses one
+   * live CLI conversation and an exact continuation costs only the new messages.
+   *
+   * `per-request` sends a fresh key on every dispatch, so no request is ever a
+   * continuation: Meridian replays history into a new conversation instead of
+   * matching it against what it delivered. That removes the whole continuation
+   * conflict class — the prefix, the batch, and the recovery turn only the
+   * connector knows about — at the cost of the live process and its prefix cache.
+   * Worth knowing before choosing: the bridge reports `failed: 126` against
+   * `completed: 63`, and every conflict it counts needs a second dispatch.
+   */
+  conversationMode: z.union(['pinned', 'per-request']).default('pinned').volatile(),
+  /**
    * Write the exact body of every dispatch to `captureDir`.
    *
    * Off by default. A capture is a complete transcript with nothing redacted,
@@ -288,6 +308,7 @@ export function resolveOptions(config, environment = process.env) {
     ignoredNoticeKinds: Object.freeze(resolveIgnoredNoticeKinds(plain.ignoredNoticeKinds)),
     keepLatestRuntimeContext: plain.keepLatestRuntimeContext ?? true,
     repairSpentBatch: plain.repairSpentBatch ?? true,
+    conversationMode: plain.conversationMode ?? 'pinned',
     captureRequestBodies: plain.captureRequestBodies ?? false,
     captureDir: resolveCaptureDir(plain),
     captureMaxFiles: plain.captureMaxFiles ?? DEFAULT_CAPTURE_MAX_FILES,

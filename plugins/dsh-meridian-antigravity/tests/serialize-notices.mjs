@@ -98,14 +98,67 @@ for (const midTurn of ['AS OF TURN 1', 'AS OF TURN 2', '']) {
   assert.equal(next.length, opener.length + 2, 'the tool call and its result are the only additions')
 }
 
-// A trailing notice is still left alone on a continuation. Removing one of those
-// would move the prefix for the same reason the snapshot did.
-const withNotice = texts(wire([
+// A named notice is filtered on **both** paths, so the continuation's prefix is
+// the opener's wire. Filtering it on the opener alone is what moved the prefix:
+// the opener dropped it, the continuation sent it, and Meridian refused every
+// continuation of that turn. Measured on `session-857354e7` turns 8-9 — see
+// `docs/lessons-learned.md` §3.3.
+const noticeMessages = [
   { role: 'user', content: [{ type: 'text', text: 'APPROVAL NOTICE' }], source: { kind: 'user-approval' } },
   player('hello'),
+]
+const openerWithNotice = wire(noticeMessages)
+assert.doesNotMatch(texts(openerWithNotice), /APPROVAL NOTICE/, 'an injected notice is not model input')
+
+const continuationWithNotice = wire([
+  ...noticeMessages,
   assistant(['toolu_agy_bbbb']),
   result('toolu_agy_bbbb'),
-]))
-assert.match(withNotice, /APPROVAL NOTICE/, 'a continuation sends history verbatim')
+])
+assert.doesNotMatch(texts(continuationWithNotice), /APPROVAL NOTICE/, 'the notice is dropped on a continuation too')
+assert.deepEqual(
+  continuationWithNotice.slice(0, openerWithNotice.length),
+  openerWithNotice,
+  'a notice must not move the continuation prefix',
+)
+
+// The exception is content-based, not positional: a request that carries no player
+// turn keeps its notice, because dropping it would leave nothing to answer.
+const noticeOnly = wire([
+  { role: 'user', content: [{ type: 'text', text: 'APPROVAL NOTICE' }], source: { kind: 'user-approval' } },
+])
+assert.match(texts(noticeOnly), /APPROVAL NOTICE/, 'a notice that is the whole request is kept')
+
+// A checkpoint's framing is replaced, its body is not, and the replacement is a
+// pure function of the message -- so an opener and its continuation agree on the
+// bytes and the pinned prefix never moves.
+const checkpointMessage = {
+  role: 'user',
+  source: { kind: 'compact-checkpoint' },
+  content: [{
+    type: 'text',
+    text: 'This is an automatically generated checkpoint condensing an earlier span of the conversation'
+      + ' to free up context. Treat the captured context as established background and build on it without'
+      + ' restating it. Continue the task directly from the messages that follow, without acknowledging this'
+      + ' checkpoint.\n\n<compacted-summary>\n## Next Step\n- await user selection\n</compacted-summary>',
+  }],
+}
+const framedOpener = wire([checkpointMessage, player('hello')])
+const framedText = texts(framedOpener)
+assert.match(framedText, /It describes an earlier state/, 'the framing is replaced')
+assert.doesNotMatch(framedText, /established background/, 'the old framing does not survive')
+assert.match(framedText, /## Next Step\n- await user selection/, 'the summary body is untouched')
+
+const framedContinuation = wire([
+  checkpointMessage,
+  player('hello'),
+  assistant(['toolu_agy_cccc']),
+  result('toolu_agy_cccc'),
+])
+assert.deepEqual(
+  framedContinuation.slice(0, framedOpener.length),
+  framedOpener,
+  'the reframing must not move the continuation prefix',
+)
 
 console.log('serialize-notices: ok')

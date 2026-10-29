@@ -8,14 +8,18 @@
  * The transcript was then left ending on a tool result that nothing could answer,
  * so every later turn was refused identically: a permanently dead session.
  *
- * Three behaviours are asserted here:
+ * Four behaviours are asserted here:
  *
  *   a blocked generation is `CONTENT_FILTERED`, not a retryable transport fault,
  *   on the in-stream path and on the HTTP 502 path the ledger records;
  *   a failure on a continuation Meridian answered is `MERIDIAN_BATCH_SPENT`,
  *   while one that never reached Meridian stays retryable `TRANSPORT`;
- *   and the connector can stand in for the reply that will never exist, which is
- *   the only thing that makes the next request an ordinary call again.
+ *   a continuation refused as a transcript conflict is retried **once** with the
+ *   assistant turn Meridian's own error asks for appended, and the retried
+ *   request is an ordinary call rather than a continuation;
+ *   and when the retry is refused too, the connector can stand in for the reply
+ *   that will never exist, which is the only thing that makes the next request an
+ *   ordinary call again.
  *
  * Runs against a scriptable fake Meridian over loopback. Like the conformance
  * suite, this needs the module-resolution rig: `./tests/run.sh`.
@@ -56,7 +60,7 @@ const SPENT_DETAIL = 'Antigravity tool result was already consumed; append the s
 const LIVE_REPLY = 'I apologize, but I am unable to directly edit the campaign log for you.'
   + ' The text within the log contains explicit content that triggers my safety filters.'
 
-/** The other 409: the delivered history genuinely moved, so no reply can repair it. */
+/** The other 409: the delivered history moved, which the recovery retry answers. */
 const REWRITE_DETAIL = 'Antigravity tool continuation changed its delivered history or tool batch'
 
 const state = {
@@ -65,21 +69,60 @@ const state = {
   sawReplayOnly: false,
   nextStatus: undefined,
   onMessages: undefined,
+  /** One action per request, consumed in order: `'refuse'` or `'answer'`. */
+  script: [],
+  /** Every parsed `/v1/messages` body received, in dispatch order. */
+  bodies: [],
 }
 
 const HEALTH = {
   status: 'healthy',
-  version: '1.76.1',
+  version: '1.81.0',
   backend: 'antigravity',
-  support: { tier: 'preview', cliVersion: '1.2.7', verifiedCliVersion: '1.2.7' },
+  support: { tier: 'preview', cliVersion: '1.3.4', verifiedCliVersion: '1.3.4' },
   capabilities: { nativeReasoning: false, thinkingBudgets: false },
 }
 
 const sse = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
 
+/** Meridian's 409 for a continuation it will not accept. */
+function refuseContinuation(res, detail) {
+  res.writeHead(409, { 'content-type': 'application/json' })
+  res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: detail } }))
+}
+
+/** A complete, ordinary answer: what a retried request gets when Meridian accepts it. */
+function serveAnswer(res, text = 'resumed') {
+  res.writeHead(200, { 'content-type': 'text/event-stream' })
+  res.write(sse('message_start', {
+    type: 'message_start',
+    message: { id: 'msg_1', model: 'gemini-3.8-flash-low', content: [], usage: { input_tokens: 5, output_tokens: 0 } },
+  }))
+  res.write(sse('content_block_start', {
+    type: 'content_block_start',
+    index: 0,
+    content_block: { type: 'text', text: '' },
+  }))
+  res.write(sse('content_block_delta', {
+    type: 'content_block_delta',
+    index: 0,
+    delta: { type: 'text_delta', text },
+  }))
+  res.write(sse('content_block_stop', { type: 'content_block_stop', index: 0 }))
+  res.write(sse('message_delta', {
+    type: 'message_delta',
+    delta: { stop_reason: 'end_turn' },
+    usage: { input_tokens: 5, output_tokens: 2 },
+  }))
+  res.write(sse('message_stop', { type: 'message_stop' }))
+  res.end()
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost')
-  for await (const _ of req) { /* drain */ }
+  const chunks = []
+  for await (const chunk of req) chunks.push(chunk)
+  const raw = Buffer.concat(chunks).toString('utf8')
 
   if (url.pathname === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' })
@@ -91,6 +134,21 @@ const server = createServer(async (req, res) => {
     res.end('{}')
     return
   }
+  state.bodies.push(raw.length === 0 ? undefined : JSON.parse(raw))
+
+  // A scripted action is consumed before the mode: it is how a test drives a
+  // refusal and then an accepted answer on the same turn, which is the retry
+  // path. An empty script falls through to `state.mode`.
+  const action = state.script.shift()
+  if (action === 'refuse') {
+    refuseContinuation(res, state.refuseDetail ?? SPENT_DETAIL)
+    return
+  }
+  if (action === 'answer') {
+    serveAnswer(res)
+    return
+  }
+
   // A scripted non-2xx, for the failures Meridian's ledger records as HTTP 502:
   // the content filter and the dropped agent connection. Both arrive with the
   // real cause only in the body.
@@ -114,9 +172,7 @@ const server = createServer(async (req, res) => {
     return
   }
   if (state.mode === 'refuse') {
-    const detail = state.refuseDetail ?? SPENT_DETAIL
-    res.writeHead(409, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: detail } }))
+    refuseContinuation(res, state.refuseDetail ?? SPENT_DETAIL)
     return
   }
   if (state.mode === 'unreachable') {
@@ -136,6 +192,43 @@ const server = createServer(async (req, res) => {
   if (state.mode === 'stall') {
     // Headers and one frame, then silence: the request reached Meridian and is
     // mid-stream when the idle deadline fires.
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    res.write(sse('message_start', {
+      type: 'message_start',
+      message: { id: 'msg_1', model: 'gemini-3.8-flash-low', content: [], usage: { input_tokens: 5, output_tokens: 0 } },
+    }))
+    const timer = setTimeout(() => { if (!res.writableEnded) res.end() }, 5_000)
+    timer.unref()
+    res.on('close', () => clearTimeout(timer))
+    return
+  }
+  if (state.mode === 'cutFirst') {
+    // The live shape from `session-dc7217e4` turn 2: a long tool loop, then the
+    // turn dies with no reply and the batch is spent. Only the first dispatch is
+    // cut; the replay-only re-ask above answers 404 for want of a saved response,
+    // so the next ordinary request is the recovery retry and it succeeds.
+    if (state.cutOnce === true) {
+      serveAnswer(res)
+      return
+    }
+    state.cutOnce = true
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    res.write(sse('message_start', {
+      type: 'message_start',
+      message: { id: 'msg_1', model: 'gemini-3.8-flash-low', content: [], usage: { input_tokens: 5, output_tokens: 0 } },
+    }))
+    res.end()
+    return
+  }
+  if (state.mode === 'stallFirst') {
+    // Meridian's own turn deadline expiring while the stream is open: the batch is
+    // already consumed, so this is the second route to a spent verdict. Only the
+    // first dispatch stalls; the recovery retry is answered.
+    if (state.stallOnce === true) {
+      serveAnswer(res)
+      return
+    }
+    state.stallOnce = true
     res.writeHead(200, { 'content-type': 'text/event-stream' })
     res.write(sse('message_start', {
       type: 'message_start',
@@ -232,6 +325,23 @@ const options = (messages, extra) => ({
   ...extra,
 })
 
+/**
+ * The live shape from `session-dc7217e4` turn 3: a spent batch left a tool result
+ * at the tail, then the player sent a new message. The result is still a
+ * continuation (`analyzeContinuation` counts tool messages after the last
+ * assistant), and the serializer merges the player's turn into that tool result,
+ * which is what makes the appended instruction matter.
+ */
+const continuationThenRequest = request => [...continuation(), user(request)]
+
+/** A user message the harness recorded, which is not a player request. */
+const injected = (kind, text = 'steady') => ({
+  role: 'user',
+  id: `i-${kind}`,
+  source: { kind },
+  content: [{ type: 'text', text }],
+})
+
 async function collect(iterable) {
   const out = []
   for await (const chunk of iterable) out.push(chunk)
@@ -276,10 +386,16 @@ await check('a blocked generation is CONTENT_FILTERED, not a retryable transport
 })
 
 await check('a cut stream on an answered continuation is MERIDIAN_BATCH_SPENT', async () => {
+  // The repair is off so the classification is observable: with it on, a spent
+  // batch is retried instead of reported (`a spent batch is retried once as an
+  // ordinary call` pins that half).
   state.mode = 'cut'
   state.sawReplayOnly = false
   const messages = continuation()
-  await expectFailure(collect(runTurn(deps(), options(messages))), 'MERIDIAN_BATCH_SPENT')
+  await expectFailure(
+    collect(runTurn(deps({ repairSpentBatch: false }), options(messages))),
+    'MERIDIAN_BATCH_SPENT',
+  )
   assert.equal(state.sawReplayOnly, true, 'the saved-answer recovery must still be attempted first')
 })
 
@@ -325,11 +441,15 @@ await check('the policy text is found past the message-length cap', async () => 
 })
 
 await check('a 502 on a continuation is MERIDIAN_BATCH_SPENT, not a retryable SERVER', async () => {
+  // Repair off: with it on this turn is retried, so the code never surfaces.
   state.nextStatus = {
     status: 502,
     body: { type: 'error', error: { type: 'api_error', message: AGENT_INTERRUPTED_DETAIL } },
   }
-  await expectFailure(collect(runTurn(deps(), options(continuation()))), 'MERIDIAN_BATCH_SPENT')
+  await expectFailure(
+    collect(runTurn(deps({ repairSpentBatch: false }), options(continuation()))),
+    'MERIDIAN_BATCH_SPENT',
+  )
 })
 
 await check('the same 502 on an ordinary turn keeps its retryable classification', async () => {
@@ -355,13 +475,25 @@ await check('a dropped agent connection gets its own retryable code', async () =
   )
 })
 
-await check('the connector stands in for a reply Meridian consumed the batch for', async () => {
+await check('a batch Meridian already consumed is stood in for after the retry', async () => {
+  // Meridian consumed the tool results, so the transcript ends on them and every
+  // later request re-presents a batch it will not accept. The connector first
+  // retries once with the missing assistant turn appended -- the remedy
+  // Meridian's own error asks for -- and when that is refused too it commits a
+  // notice in place of the reply so the conversation can continue.
+  //
+  // The notice no longer names the batch size: on the retry the request is an
+  // ordinary call, so the connector no longer sees a continuation to count. The
+  // count is asserted for the notice builder itself in `failure.test.js`.
   state.mode = 'refuse'
   state.refuseDetail = SPENT_DETAIL
+  state.bodies = []
+  state.script = ['refuse', 'refuse']
   const chunks = await collect(runTurn(deps(), options(continuation())))
   const text = textOf(chunks)
+  assert.equal(state.bodies.length, 2, 'the refusal is retried once before the notice')
   assert.match(text, /\[Meridian Antigravity\]/)
-  assert.match(text, /batch of 1 tool result /)
+  assert.match(text, /This turn's tool batch was consumed/)
   assert.match(text, /consumed by a generation the backend blocked and never completed/)
   assert.match(text, /no reply exists for it/)
   assert.match(text, /Nothing was lost and no tool ran twice/)
@@ -382,29 +514,216 @@ await check('the repair is off when repairSpentBatch is false', async () => {
   )
 })
 
-await check('a refused continuation is repaired, and the notice quotes Meridian', async () => {
-  // The request no longer matches what Meridian delivered, so this continuation
-  // is refused and would be refused again on every later turn. Committing the
-  // notice is what ends that. Which of Meridian's causes moved is not knowable
-  // here, so the notice quotes what Meridian said, carries the status, and lists
-  // the causes without ranking them.
+await check('a spent batch is retried once as an ordinary call', async () => {
+  // The shape that actually happened live: Meridian accepted the tool results,
+  // then the turn died with no reply (`Antigravity turn timed out`). It arrives
+  // as `MERIDIAN_BATCH_SPENT`, whose text never says "already consumed", so the
+  // text match misses it and this path used to skip the repair entirely -- the
+  // turn errored and the transcript stayed on the tool results.
+  //
+  // The remedy is the one the refusal path already uses: append the assistant
+  // turn Meridian's error asks for plus a user instruction, which leaves the
+  // request ending on a user turn. That retry is an ordinary call, so the batch
+  // Meridian consumed is no longer being re-presented as a continuation.
+  state.mode = 'cutFirst'
+  state.cutOnce = false
+  state.script = []
+  state.bodies = []
+  const chunks = await collect(runTurn(deps(), options(continuation())))
+  // Dispatch, the replay-only re-ask that finds no saved answer, then the retry.
+  assert.equal(state.bodies.length, 3, 'exactly one recovery retry, not a loop')
+  const retried = state.bodies.at(-1).messages
+  assert.deepEqual(
+    retried.at(-2),
+    { role: 'assistant', content: [{ type: 'text', text: 'Recovering from transcript conflict.' }] },
+  )
+  assert.equal(retried.at(-1).role, 'user')
+  assert.match(retried.at(-1).content[0].text, /previous tool batch was interrupted by a transcript rewrite/)
+  assert.match(retried.at(-1).content[0].text, /continue your work using the tool results above/)
+  // The retry carries the consumed results in history but not as a trailing
+  // continuation: that is what makes it acceptable rather than refused again.
+  assert.equal(retried.at(-1).content.some(block => block.type === 'tool_result'), false)
+  assert.equal(textOf(chunks), 'resumed')
+  assert.doesNotMatch(textOf(chunks), /\[Meridian Antigravity\]/)
+  assert.equal(chunks.at(-1).type, 'finish')
+  assert.equal(chunks.at(-1).reason.kind, 'stop')
+})
+
+await check('a spent batch is not retried when repairSpentBatch is false', async () => {
+  // The flag stays the single switch for the whole repair, retry included.
+  state.mode = 'cut'
+  state.script = []
+  state.bodies = []
+  await expectFailure(
+    collect(runTurn(deps({ repairSpentBatch: false }), options(continuation()))),
+    'MERIDIAN_BATCH_SPENT',
+  )
+  assert.equal(state.bodies.length, 2, 'the initial dispatch and the replay re-ask only')
+})
+
+await check('a spent batch whose retry also dies is reported, not retried twice', async () => {
+  // The retry is one second attempt, not a repair loop. It is an ordinary call,
+  // so a second stream cut is a retryable transport fault rather than another
+  // spent batch -- the harness's own policy may re-send it, safely, because no
+  // consumed continuation is being re-presented.
+  state.mode = 'cut'
+  state.script = []
+  state.bodies = []
+  await expectFailure(collect(runTurn(deps(), options(continuation()))), 'TRANSPORT')
+  assert.equal(state.bodies.length, 4, 'dispatch, replay, retry, replay -- then stop')
+})
+
+await check('a refused continuation is retried once with the recovery turn appended', async () => {
+  // Meridian pins a continuation to the history it already delivered, so a 409
+  // means the prefix moved. The connector's answer is one retry that appends the
+  // assistant turn Meridian's own error asks for. Appending it also leaves the
+  // retried request ending on a user message, so it is no longer a tool-result
+  // continuation and Meridian's prefix constraint no longer applies.
   state.mode = 'refuse'
   state.refuseDetail = REWRITE_DETAIL
+  state.bodies = []
+  state.script = ['refuse', 'answer']
   const chunks = await collect(runTurn(deps(), options(continuation())))
-  const text = textOf(chunks)
-  assert.match(text, /^\[Meridian Antigravity\]/, 'the turn must be closed by a notice, not an error')
-  assert.match(text, /Meridian refused the continuation/)
-  assert.match(text, /no longer matched the history it had already delivered/)
-  // Meridian's own words, not a paraphrase, and the status to go with them.
-  assert.match(text, /Meridian said: "/)
-  assert.match(text, /changed its delivered history or tool batch/)
-  assert.match(text, /status 409/)
-  // Causes are listed without one being chosen, and the pruner is not first.
-  assert.match(text, /rebuilt snapshot message \(the runtime context\)/)
-  assert.match(text, /a tool result pruned or compacted after delivery/)
-  assert.match(text, /a model change applied mid-batch/)
-  assert.doesNotMatch(text, /the transcript changed/)
+  assert.equal(state.bodies.length, 2, 'exactly one retry, not a loop')
+  const retried = state.bodies[1].messages
+  assert.deepEqual(
+    retried.at(-2),
+    { role: 'assistant', content: [{ type: 'text', text: 'Recovering from transcript conflict.' }] },
+  )
+  assert.equal(retried.at(-1).role, 'user')
+  assert.match(retried.at(-1).content[0].text, /previous tool batch was interrupted by a transcript rewrite/)
+  assert.match(retried.at(-1).content[0].text, /continue your work using the tool results above/)
+  // The retry was accepted, so the turn ends on the model's reply with no notice.
+  assert.equal(textOf(chunks), 'resumed')
+  assert.doesNotMatch(textOf(chunks), /\[Meridian Antigravity\]/)
+  assert.equal(chunks.at(-1).type, 'finish')
   assert.equal(chunks.at(-1).reason.kind, 'stop')
+})
+
+await check('a retried turn re-issues the player\'s newest message', async () => {
+  // Turn 3 of `session-dc7217e4`: the player's message arrived while a spent batch
+  // was still at the tail, Meridian refused the continuation, and the recovery turn
+  // said "continue your work using the tool results above". The model answered the
+  // previous request, because that is what the instruction told it to do. The
+  // player's words must be the operative instruction instead.
+  state.mode = 'refuse'
+  state.refuseDetail = REWRITE_DETAIL
+  state.script = ['refuse', 'answer']
+  state.bodies = []
+  const request = 'I mean we hit the same error in this very session.'
+  const chunks = await collect(runTurn(deps(), options(continuationThenRequest(request))))
+  assert.equal(state.bodies.length, 2, 'exactly one retry')
+  const instruction = state.bodies[1].messages.at(-1)
+  assert.equal(instruction.role, 'user')
+  const text = instruction.content[0].text
+  assert.match(text, /previous tool batch was interrupted by a transcript rewrite/)
+  assert.match(text, /The user's newest message is the instruction/)
+  assert.ok(text.includes(request), 'the request is repeated verbatim')
+  assert.doesNotMatch(text, /continue your work using the tool results above/)
+  assert.equal(textOf(chunks), 'resumed')
+})
+
+await check('an injected user message is never mistaken for the request', async () => {
+  // Runtime context, workspace instructions and the skill catalog are all user-role
+  // messages. None of them may become the instruction the retry answers, so with no
+  // player turn at the tail the original wording stays.
+  state.mode = 'refuse'
+  state.refuseDetail = REWRITE_DETAIL
+  state.script = ['refuse', 'answer']
+  state.bodies = []
+  const messages = [...continuation(), injected('runtime-context'), injected('agent-instructions')]
+  await collect(runTurn(deps(), options(messages)))
+  const text = state.bodies[1].messages.at(-1).content[0].text
+  assert.match(text, /continue your work using the tool results above/)
+  assert.doesNotMatch(text, /The user's newest message is the instruction/)
+})
+
+await check('a long request is repeated only up to the cap', async () => {
+  // A pasted error is already in the request once; repeating it in full would double
+  // the prefill of the one call that is already the expensive one.
+  state.mode = 'refuse'
+  state.refuseDetail = REWRITE_DETAIL
+  state.script = ['refuse', 'answer']
+  state.bodies = []
+  await collect(runTurn(deps(), options(continuationThenRequest('x'.repeat(9_000)))))
+  const text = state.bodies[1].messages.at(-1).content[0].text
+  assert.match(text, /\[request truncated for the retry\]/)
+  assert.ok(text.length < 5_000, `instruction was ${text.length} chars`)
+})
+
+await check('a pinned conversation sends one key for every dispatch', async () => {
+  // The default: one live CLI conversation per harness session, so Meridian can
+  // reuse its process and its prefix cache.
+  state.mode = null
+  state.script = ['answer', 'answer']
+  state.bodies = []
+  const opts = options(continuation(), { sessionId: 'session-pinned' })
+  const depsPinned = deps()
+  await collect(runTurn(depsPinned, opts))
+  await collect(runTurn(depsPinned, opts))
+  assert.equal(state.bodies.length, 2)
+  assert.equal(state.bodies[0].meridian_session_key, 'session-pinned')
+  assert.equal(state.bodies[1].meridian_session_key, 'session-pinned')
+})
+
+await check('per-request mode starts a new conversation every dispatch', async () => {
+  // No request is a continuation, so Meridian replays history instead of matching
+  // a delivered prefix -- the whole conflict class stops applying.
+  state.mode = null
+  state.script = ['answer', 'answer']
+  state.bodies = []
+  const opts = options(continuation(), { sessionId: 'session-stateless' })
+  const depsStateless = deps({ conversationMode: 'per-request' })
+  await collect(runTurn(depsStateless, opts))
+  await collect(runTurn(depsStateless, opts))
+  const [first, second] = state.bodies.map(body => body.meridian_session_key)
+  assert.match(first, /^session-stateless#p\d+$/, 'the key names the harness session it belongs to')
+  assert.match(second, /^session-stateless#p\d+$/)
+  assert.notEqual(first, second, 'two dispatches must not share a conversation')
+})
+
+await check('a repaired turn keeps its conversation until the turn ends', async () => {
+  // The retry cannot win in the conversation that just refused it, so it rotates.
+  // But the model issues NEW tool calls there, and Meridian resolves a continuation
+  // by tool-id ownership, so every later step of that turn must stay in the same
+  // conversation. Measured on `session-10c2aff1`: ten repairs in one turn, one per
+  // step, because each continuation went back to the pinned key.
+  state.mode = 'refuse'
+  state.refuseDetail = REWRITE_DETAIL
+  state.script = ['refuse', 'answer']
+  state.bodies = []
+  const opts = options(continuation(), { sessionId: 'session-sticky' })
+  await collect(runTurn(deps(), opts))
+  assert.equal(state.bodies.length, 2, 'the refusal is retried once')
+  const [refused, retried] = state.bodies.map(body => body.meridian_session_key)
+  assert.equal(refused, 'session-sticky')
+  assert.match(retried, /^session-sticky#r\d+$/, 'the retry is a new conversation')
+
+  // A continuation after the repair continues the conversation that issued its calls.
+  state.mode = null
+  state.script = ['answer']
+  await collect(runTurn(deps(), opts))
+  assert.equal(state.bodies.at(-1).meridian_session_key, retried, 'the rest of the turn stays there')
+
+  // A turn opener is the one request that can safely seed a conversation again.
+  state.script = ['answer']
+  await collect(runTurn(deps(), options([user('next question')], { sessionId: 'session-sticky' })))
+  assert.equal(state.bodies.at(-1).meridian_session_key, 'session-sticky', 'the next turn is pinned again')
+})
+
+await check('a continuation still refused after the retry is reported as an error', async () => {
+  // The retry is a single second attempt, not a repair loop. If Meridian refuses
+  // the appended recovery turn as well, the transcript cannot continue and the
+  // connector reports the provider's verdict instead of inventing a reply.
+  state.mode = 'refuse'
+  state.refuseDetail = REWRITE_DETAIL
+  state.bodies = []
+  state.script = ['refuse', 'refuse']
+  await expectFailure(
+    collect(runTurn(deps(), options(continuation()))),
+    'MERIDIAN_CONTINUATION_CONFLICT',
+  )
+  assert.equal(state.bodies.length, 2)
 })
 
 await check('a conflict with no continuation is still reported as an error', async () => {
@@ -440,13 +759,31 @@ await check('an aborted continuation is healed by the repair on the next request
   assert.match(textOf(chunks), /\[Meridian Antigravity\]/)
 })
 
+await check('a spent batch found by the idle deadline is retried too', async () => {
+  // The second route to the same verdict. This one throws from inside the catch,
+  // before the repair block, so unless the retry is taken where the failure is
+  // created it cannot be taken at all.
+  state.mode = 'stallFirst'
+  state.stallOnce = false
+  state.script = []
+  state.bodies = []
+  const chunks = await collect(
+    runTurn(deps({ streamIdleTimeoutMs: 80 }), options(continuation())),
+  )
+  assert.equal(state.bodies.length, 2, 'the dispatch and the recovery retry, no replay probe')
+  assert.equal(state.bodies.at(-1).messages.at(-1).role, 'user')
+  assert.match(state.bodies.at(-1).messages.at(-1).content[0].text, /continue your work using the tool results above/)
+  assert.equal(textOf(chunks), 'resumed')
+})
+
 await check('an idle stream stall on a continuation is MERIDIAN_BATCH_SPENT', async () => {
   // The stall happens after Meridian has the request, so the batch may already be
   // spent. A retryable TIMEOUT here is the same trap as a retryable cut stream.
+  // Repair off for the same reason as the cut above.
   state.mode = 'stall'
   state.onMessages = undefined
   await expectFailure(
-    collect(runTurn(deps({ streamIdleTimeoutMs: 80 }), options(continuation()))),
+    collect(runTurn(deps({ streamIdleTimeoutMs: 80, repairSpentBatch: false }), options(continuation()))),
     'MERIDIAN_BATCH_SPENT',
   )
 })

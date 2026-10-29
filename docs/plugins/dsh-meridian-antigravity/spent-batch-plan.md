@@ -368,6 +368,11 @@ checks:
 | `spentIfContinuation(…, false)` (2xx-only guard) | *a cut stream on an answered continuation…*, *a 502 on a continuation…* |
 | delete the `MERIDIAN_AGENT_INTERRUPTED` branch | *a dropped agent connection gets its own retryable code* |
 | `repairSpentBatch: false` | *the connector stands in for a reply…*, *an aborted continuation is healed…* |
+| delete the retry at the saved-answer failure | *a spent batch is retried once as an ordinary call*, *a spent batch whose retry also dies…* |
+| delete the retry at the idle deadline | *a spent batch found by the idle deadline is retried too* |
+| drop the `_isRetry` bound in `spentRetry` | no check fails: it loops instead. The body count (`4`) in *a spent batch whose retry also dies…* is what pins the bound |
+| search for the player turn from the start of the request, not after the tool results | *a refused continuation is retried once…*, *a spent batch is retried once…*, *a retried turn re-issues the player's newest message*, *an injected user message is never mistaken…*, *a long request is repeated only up to the cap*, *a spent batch found by the idle deadline…* |
+| drop the cap on the repeated request | *a long request is repeated only up to the cap* |
 | loosen the regex back to `could not be generated` | *a generic "could not be generated" is not claimed as a content filter* |
 | idle path thrown without the guard | *an idle stream stall on a continuation is MERIDIAN_BATCH_SPENT* |
 | `reachedMeridian` set unconditionally | *a cut stream that never reached Meridian…*, *a stall before Meridian answers…* |
@@ -425,8 +430,8 @@ $ node --test tests/*.test.js
 - **Request bodies are no longer nowhere.** `exchanges` is metadata only; Meridian's activity API
   (`/providers/status`) is counts only; `agy` is not on this host (the D&D35 workspace
   has a Windows launcher, `run-antigravity.bat`). The config-flagged dump in the connector now exists:
-  `captureRequestBodies` + `captureDir` + `captureMaxFiles`, off by default, one file per dispatch,
-  bounded, pruned, and never fatal. See §9.3. **`policy.cjs` is now read and is *not* the content
+  `captureRequestBodies` + `captureDir` + `captureMaxFiles`, default off but **on in this deployment since
+  2026-10-11**, one file per dispatch, bounded, pruned, and never fatal. See §9.3. **`policy.cjs` is now read and is *not* the content
   filter** — it is a tool allow-list hook (`allow`/`deny` per `toolCall`, writing
   `policy-audit.jsonl`), and its baked-in allow-list matches the current dd35 tool names
   (`roll_check`, `roll_monster_behavior`). It neither configures nor can lift the safety filter. The
@@ -505,7 +510,12 @@ assistant message is seq 217 and the tool results at seq 219 and 222 have nothin
 
 ### 9.3 If it fails, capture the evidence
 
-Set `captureRequestBodies: true` and `captureDir: <a directory outside the repositories>` on the
-`llm-meridian-antigravity` row and repeat. Two consecutive captures differ in exactly the messages that
+Capture is **already on**: `captureRequestBodies: true` and `captureDir: /root/.dsh/meridian-capture` on the
+`llm-meridian-antigravity` row, in both the bundle patch and the web profile. A different deployment sets both
+there and repeats. Two consecutive captures differ in exactly the messages that
 moved; the files are complete transcripts and are pruned to the newest 50. This is the material that
 decides whether the connector keeps translating for Meridian or talks to `agy` itself.
+
+The first diff read this way is recorded in `docs/lessons-learned.md` §3.2: on `session-dc7217e4` the moved
+message was the last user turn, 4,263 -> 31,946 bytes, because the next user message was merged into a
+`tool_result` left over from a spent batch.

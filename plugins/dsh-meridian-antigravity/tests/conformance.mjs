@@ -36,9 +36,9 @@ const { serializeRequest, enforceRequestBudget, filterNoticeMessages } = await i
 const state = {
   health: {
     status: 'healthy',
-    version: '1.76.1',
+    version: '1.81.0',
     backend: 'antigravity',
-    support: { tier: 'preview', cliVersion: '1.2.7', verifiedCliVersion: '1.2.7' },
+    support: { tier: 'preview', cliVersion: '1.3.4', verifiedCliVersion: '1.3.4' },
     capabilities: { nativeReasoning: false, thinkingBudgets: false },
   },
   models: ['gemini-3.8-flash-low', 'gemini-3.8-flash-high', 'claude-sonnet-5-5-medium', 'gpt-oss-120b-medium'],

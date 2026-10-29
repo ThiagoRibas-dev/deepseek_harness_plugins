@@ -33,7 +33,7 @@ window.__ModuleLoader__.load({
       ['baseURL', 'Meridian origin', 'http://openmediavault:3457'],
       ['apiKeyEnv', 'Credential reference', 'ANTIGRAVITY_API_KEY'],
       ['displayName', 'Display name', 'Meridian Antigravity'],
-      ['expectedCliVersion', 'Pinned agy version', '1.2.7'],
+      ['expectedCliVersion', 'Pinned agy version', '1.3.4'],
       ['expectedBackend', 'Expected backend', 'antigravity'],
     ]
 

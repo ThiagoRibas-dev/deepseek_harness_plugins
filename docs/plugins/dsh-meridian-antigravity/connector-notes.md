@@ -33,8 +33,17 @@ Three distinct guards, three different fixes:
 2. `already consumed` — line 78. Retry aftermath; still reachable when a model change lands mid-batch.
 3. `changed its model, session or execution controls` — a contract change between call and result.
 
-**Anything injected mid-turn breaks the prefix** unless it is only appended after the tool results. That
-is why history-rewriting filters must apply only to the request that starts a turn.
+**Anything injected mid-turn breaks the prefix** unless it is only appended after the tool results.
+
+**Correction, 2026-10-20 — the advice removed here said "filter only on the request that starts a turn", and
+that was the cause of a bug, not the rule that prevents one.** A filter gated on position makes the opener
+and its continuation disagree, which is precisely the prefix change the contract rejects. Measured on
+`session-857354e7` (`Review Unstaged Git Files`), turns 8 and 9: five consecutive refusals, each repaired by
+one extra dispatch, where the refused body differed from the accepted one by exactly one block — the
+`model-selection` notice, dropped by the opener and sent by the continuation. The model then answered under
+the recovery instruction instead of the user's request, twice, re-emitting an earlier audit. The filter now
+runs on every request and the decision is content-based, never positional. Full entry:
+`docs/lessons-learned.md` §3.3.
 
 ## Quota
 
@@ -51,8 +60,35 @@ owner props that `ui-conversation` never sets.
 ## Open items
 
 - The continuation fix is unverified end to end: the next long tool loop on Meridian is the test.
+- **Verification state after the 2026-10-21 restart**, read from the captures with
+  `tmp/meridian/wire-report.mjs <session-id-suffix>`:
+  - verified live — the pinned conversation key (one `meridian_session_key` per session, no `#` suffix), and a
+    tool continuation accepted on its first dispatch (`session-5084d669`, the continuation is a strict prefix
+    extension of the opener);
+  - verified live — resuming a session after a restart needs no reset, because a turn opener carries no
+    trailing batch (`session-d772c4cf`);
+  - **not yet exercised** — the notice filter (needs a live `model-selection` notice, i.e. a model switch
+    followed by a tool step), the `#r1` reset (needs a real conflict), the spent-batch retry (needs a spent
+    batch; `streamIdleTimeoutMs` can force one), and `conversationMode: per-request` (needs a restart).
 - The quota strip needs a **restart**, because `dsh.client.inject` changed in `package.json`.
 - The context-pressure nudge has never been observed firing before now; its interaction with Meridian's
   contract is the reason the notice-filter fix matters.
 - `/root/.dsh/profiles/web/cordis.patch.yml` is the one live config not in git. Three plugins are
   mounted there.
+
+## Not a connector fault: the rewind
+
+`session-d772c4cf` looked like the connector again — three request variants absorbed, questions answered
+with an earlier audit — and the captures cleared it: every dispatch carried the player's message last, no notice, no
+retry, one pinned key. The cause was a compaction checkpoint 19 hours stale, whose `## Next Step` said "await
+user selection" and which the model treated as the current state. `/compact` and resend fixed it on the first
+try — the following turn made seven edits to `docs/MILESTONES.md` with no approval message in between.
+`docs/lessons-learned.md` §8 has the measurements. §9 records the workspace approval gate that shapes those
+replies into research artifacts, and the fact that the gate was *not* what blocked execution.
+
+## OpenAI endpoint schema strictness
+
+- Meridian validates OpenAI `/v1/chat/completions` payloads with `chatSchema.strict()`.
+- Unrecognized keys (e.g. `presence_penalty`, `frequency_penalty`, `top_k`, `_min_p`, `_grammar`, `_chat_template_kwargs`) trigger a 400 Bad Request error (`Unsupported OpenAI request: : Unrecognized keys: ...`).
+- There is no Meridian configuration setting or environment variable to disable strictness or ignore unrecognized keys; unrecognized parameters must be filtered client-side before dispatching to Meridian.
+

@@ -7,8 +7,8 @@
 # you point `agent-default-model` (or a per-session model selection) at the new
 # route yourself.
 #
-# Values below are the ones verified live against Meridian 1.76.1 with
-# official agy 1.2.7 on the OpenMediaVault unit.
+# Values below are the ones verified live against Meridian 1.81.0 with
+# official agy 1.3.4 on the OpenMediaVault unit.
 - insert:
     - id: llm-meridian-antigravity
       name: '@local/dsh-meridian-antigravity'
@@ -24,7 +24,7 @@
         # Antigravity backend on the pinned CLI version.
         requireHealthGate: true
         expectedBackend: antigravity
-        expectedCliVersion: 1.2.7
+        expectedCliVersion: 1.3.4
         # Keep the exact body of the last dispatches. When Meridian refuses a
         # continuation it compares the request against a history this process never
         # sees, so what was sent is the only evidence -- and diffing the refused
@@ -34,8 +34,11 @@
         #
         # A capture is a COMPLETE, UNREDACTED transcript: every message and every
         # tool result, campaign prose included. Treat the directory as session
-        # data, and turn this off once the diagnosis is done -- nothing else
-        # depends on it.
+        # data. Nothing else depends on it, so it can be set back to false; the
+        # decision on 2026-10-20 was to leave it on rather than toggle it per
+        # diagnosis. Its real limit is the ring: captureMaxFiles bounds how far
+        # back a diff can reach, and 44 dispatches of one turn rotated out before
+        # they were read (lessons-learned.md §3.2).
         captureRequestBodies: true
         captureDir: /root/.dsh/meridian-capture
         # Enough to diff across interleaved sessions.
