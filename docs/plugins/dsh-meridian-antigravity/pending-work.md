@@ -39,30 +39,38 @@ an over-budget turn that dispatches nothing). Suite 36 checks, 0 failures.
 
 Still open: the threshold has not fired on a live turn, and the ratio rests on a single pair.
 
-## 4. Loop report tool
+## 4. Loop report tool — **implemented 2026-10-29**
 
 Promote the ad-hoc measurement into `tmp/meridian/loop-report.mjs <session-suffix>`: per turn steps, calls,
 wall time, verbatim repeated calls, top repeated signatures. It is the regression test for items 1 and 3, and
 needs no restart.
 
-Accept: reproduces the numbers already quoted for `Review Unstaged Git Files (9)`.
+`tmp/meridian/loop-report.mjs <session-id-or-suffix> [turns]` prints per turn: steps, calls, wall time, and
+the most repeated call signatures. Run against `56894752` it reproduced the shape immediately — turn 21 alone
+issued 33 calls in 21 steps, and `read docs/MILESTONES.md offset 375` repeated 11 times across the session.
+It reads the session store only, so it needs no restart.
 
-## 5. Idle deadline: 300,000 → ~120,000
+## 5. Idle deadline — **implemented 2026-10-29**
 
 The connector's `streamIdleTimeoutMs` default is 300 s while Meridian abandons an upstream turn after 90 s
 (`MERIDIAN_UPSTREAM_IDLE_MS`), and stops retrying after three consecutive stalls. Ours should be a backstop,
 not a second policy.
 
-Accept: a stalled stream is abandoned by the connector in ~2 minutes, and the recovery retry is not spent on
-a stream Meridian was still willing to continue.
+`DEFAULT_STREAM_IDLE_TIMEOUT_MS` is now **120,000**. Meridian abandons an idle upstream at 90 s
+(`MERIDIAN_UPSTREAM_IDLE_MS`) and stops retrying after three consecutive stalls, so the connector fires 30 s
+later — a backstop for a provider that stops answering, not a shorter second policy. A test asserts the default
+stays above 90 s.
 
-## 6. Lease failures must not reach the repair path
+## 6. Lease failures — **verified 2026-10-29**
 
 `MERIDIAN_SESSION_TURN_MAX_HOLD_MS` (600,000) means a stalled holder answers **503 `overloaded_error`** with a
 distinct reason. Assert in `errors.js` that a lease failure never classifies as a transcript conflict, or the
 connector sends a repair pair for a queueing problem and spends the retry.
 
-Accept: a test feeding the lease 503 body returns a capacity error, not a conflict.
+The classification was already correct and needed only to be pinned: a 409 is the sole route to
+`MERIDIAN_CONTINUATION_CONFLICT`, and `status >= 500` returns `SERVER`, which the retry policy treats as
+transient. A test now feeds a 503 `overloaded_error` with a lease message and asserts `SERVER`, explicitly not
+the conflict code.
 
 ## 7. Verify the freshness plugin
 

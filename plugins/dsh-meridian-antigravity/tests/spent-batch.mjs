@@ -34,6 +34,8 @@ const { TurnLedger } = await import('../lib/idempotency.js')
 const { TurnGate } = await import('../lib/limiter.js')
 const { runTurn } = await import('../lib/transport.js')
 const { measurePrompt, resolvePromptBudget } = await import('../lib/budget.js')
+const { meridianError } = await import('../lib/errors.js')
+const configModule = await import('../lib/config.js')
 
 /** Verbatim from the live failure, and from the `exchanges` row it produced. */
 const FILTER_DETAIL = 'Your previous response was blocked by content safety filters: The model output'
@@ -933,6 +935,29 @@ await check('an over-budget request is refused before dispatch', async () => {
   assert.equal(error.code, 'CONTEXT_WINDOW_EXCEEDED', 'the harness compacts on this code')
   assert.match(error.message, /estimated prompt .* against an effective limit/)
   assert.equal(state.bodies.length, 0, 'nothing reached the provider')
+})
+
+await check('the idle deadline sits above the provider\'s own stall guard', async () => {
+  // Meridian gives up on an idle upstream after 90 s (MERIDIAN_UPSTREAM_IDLE_MS) and
+  // stops retrying after three consecutive stalls. This deadline is a backstop for
+  // the case where Meridian stops answering, not a second, shorter policy that
+  // spends the recovery retry on a stream the provider was still holding.
+  assert.equal(configModule.DEFAULT_STREAM_IDLE_TIMEOUT_MS, 120_000)
+  assert.ok(configModule.DEFAULT_STREAM_IDLE_TIMEOUT_MS > 90_000, 'must outlast the provider guard')
+})
+
+await check('a lease overload is a retryable server error, not a transcript conflict', async () => {
+  // MERIDIAN_SESSION_TURN_MAX_HOLD_MS (600 s) means a stalled lease holder answers
+  // 503 overloaded_error. Classifying that as the deterministic 409 conflict would
+  // send a repair pair for a queueing problem and spend the one recovery retry.
+  const error = meridianError(
+    { error: { type: 'overloaded_error', message: 'This session is serialized; the holder exceeded its lease' } },
+    503,
+    new Headers(),
+  )
+  assert.equal(error.code, 'SERVER', 'generic retryable server failure')
+  assert.notEqual(error.code, 'MERIDIAN_CONTINUATION_CONFLICT', 'must never be treated as a transcript conflict')
+  assert.match(error.message, /holder exceeded its lease/)
 })
 
 server.close()

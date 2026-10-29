@@ -56,7 +56,16 @@ export const DEFAULT_MAX_TOKENS = 32_768
 export const DEFAULT_MAX_CONCURRENT_TURNS = 3
 
 /** One outstanding stream read may not idle longer than Meridian's turn deadline. */
-export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
+/**
+ * How long the connector waits for another byte before it treats the stream as cut.
+ *
+ * Meridian abandons an upstream turn after `MERIDIAN_UPSTREAM_IDLE_MS` (90 s by
+ * default) and stops retrying after three consecutive stalls, so this deadline is a
+ * backstop for the case where Meridian itself stops answering — not a second policy.
+ * At 120 s it fires 30 s after Meridian's own guard would have, which leaves the
+ * recovery retry to the layer that knows whether a retry can help.
+ */
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 120_000
 
 /** Captures kept in `captureDir` before the oldest is deleted. */
 export const DEFAULT_CAPTURE_MAX_FILES = 50
