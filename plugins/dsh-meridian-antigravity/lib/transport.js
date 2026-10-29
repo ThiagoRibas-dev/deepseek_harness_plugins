@@ -96,12 +96,10 @@ async function* runTurnAttempt(dependencies, options) {
   // key on the wire can differ, because rotating it is how a conversation is
   // reset without losing the trail.
   const scope = typeof options.sessionId === 'string' ? options.sessionId : ''
-  const sessionKey = conversationKey(scope, options, connection)
+  const sessionKey = conversationKey(scope, options)
   if (sessionKey !== scope) {
     logger?.info?.(
-      `meridian-antigravity: starting a fresh Meridian conversation (${connection.conversationMode === 'per-request'
-        ? 'per-request mode'
-        : 'recovery retry'}; key ${sessionKey})`,
+      `meridian-antigravity: starting a fresh Meridian conversation (recovery retry; key ${sessionKey})`,
     )
   }
   const { body, retained, compactionRemapped, continuation } = serializeRequest({
@@ -608,9 +606,9 @@ function requestAfterToolResults(messages) {
 /**
  * How many sessions keep a conversation ordinal.
  *
- * Both the per-request counter and the reset counter live beside the session id
- * rather than in the request, because a request cannot carry state forward. The
- * cap keeps a long-lived adapter from growing a map of finished sessions forever.
+ * The rotation counter lives beside the session id rather than in the request,
+ * because a request cannot carry state forward. The cap keeps a long-lived adapter
+ * from growing a map of finished sessions forever.
  */
 const CONVERSATION_ORDINAL_LIMIT = 256
 
@@ -641,28 +639,26 @@ const stickyConversations = new Map()
  * The `meridian_session_key` this dispatch carries.
  *
  * Meridian keys a live CLI conversation by this string, and an exact continuation
- * reuses that process. Three cases send something other than the harness id:
+ * reuses that process. Two cases send something other than the harness id:
  *
- * - `per-request` mode, where no request is a continuation at all, so Meridian
- *   replays history instead of matching a delivered prefix;
  * - the recovery retry, whose request the old conversation has already refused. A
  *   new key gives it a conversation with no history to disagree with;
  * - every continuation that follows that retry, because the tool calls it issued
  *   live in the new conversation and their results must continue there.
+ *
+ * Reusing the live conversation is the point of the connector, so the pin is
+ * always the default and there is no mode that replays every request: a replay is
+ * the path that loses history on this provider.
  *
  * The key is suffixed rather than replaced so a capture or a log line still names
  * the harness session it belongs to.
  *
  * @param base - the harness session id, or `''` when the caller supplied none.
  * @param options - the attempt's request; `_isRetry` marks the recovery retry.
- * @param connection - resolved options, for `conversationMode`.
  * @returns the key to put on the wire.
  */
-function conversationKey(base, options, connection) {
+function conversationKey(base, options) {
   if (base.length === 0) return base
-  if (connection.conversationMode === 'per-request') {
-    return `${base}#p${nextOrdinal(base)}`
-  }
   if (options._isRetry === true) {
     const rotated = `${base}#r${nextOrdinal(base)}`
     rememberSticky(base, rotated)

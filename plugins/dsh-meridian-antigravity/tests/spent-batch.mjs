@@ -666,22 +666,6 @@ await check('a pinned conversation sends one key for every dispatch', async () =
   assert.equal(state.bodies[1].meridian_session_key, 'session-pinned')
 })
 
-await check('per-request mode starts a new conversation every dispatch', async () => {
-  // No request is a continuation, so Meridian replays history instead of matching
-  // a delivered prefix -- the whole conflict class stops applying.
-  state.mode = null
-  state.script = ['answer', 'answer']
-  state.bodies = []
-  const opts = options(continuation(), { sessionId: 'session-stateless' })
-  const depsStateless = deps({ conversationMode: 'per-request' })
-  await collect(runTurn(depsStateless, opts))
-  await collect(runTurn(depsStateless, opts))
-  const [first, second] = state.bodies.map(body => body.meridian_session_key)
-  assert.match(first, /^session-stateless#p\d+$/, 'the key names the harness session it belongs to')
-  assert.match(second, /^session-stateless#p\d+$/)
-  assert.notEqual(first, second, 'two dispatches must not share a conversation')
-})
-
 await check('a repaired turn keeps its conversation until the turn ends', async () => {
   // The retry cannot win in the conversation that just refused it, so it rotates.
   // But the model issues NEW tool calls there, and Meridian resolves a continuation

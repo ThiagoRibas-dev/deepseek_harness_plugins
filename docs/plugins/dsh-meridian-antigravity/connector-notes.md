@@ -69,7 +69,7 @@ owner props that `ui-conversation` never sets.
     trailing batch (`session-d772c4cf`);
   - **not yet exercised** — the notice filter (needs a live `model-selection` notice, i.e. a model switch
     followed by a tool step), the `#r1` reset (needs a real conflict), the spent-batch retry (needs a spent
-    batch; `streamIdleTimeoutMs` can force one), and `conversationMode: per-request` (needs a restart).
+    batch; `streamIdleTimeoutMs` can force one).
 - The quota strip needs a **restart**, because `dsh.client.inject` changed in `package.json`.
 - The context-pressure nudge has never been observed firing before now; its interaction with Meridian's
   contract is the reason the notice-filter fix matters.

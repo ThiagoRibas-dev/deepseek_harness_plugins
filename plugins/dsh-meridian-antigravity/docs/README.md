@@ -104,7 +104,6 @@ The bundle patch mounts the route. Every field is optional and live-updatable.
 | `ignoredNoticeKinds` | `['model-selection', 'user-approval']` | Injected user-role notice kinds the provider never sees; `[]` disables the filter |
 | `keepLatestRuntimeContext` | `true` | Send only the newest `runtime-context` snapshot instead of every superseded one |
 | `repairSpentBatch` | `true` | Keep the conversation alive after Meridian consumed the tool batch: retry the turn **once** as an ordinary call, then stand in for a reply that still does not arrive. Without it the session ends on a tool result nothing can answer |
-| `conversationMode` | `pinned` | How the `meridian_session_key` is chosen. `pinned` reuses one live CLI conversation per harness session; `per-request` sends a fresh key on every dispatch, so no request is ever a continuation and Meridian replays history instead. `per-request` trades the live process and its prefix cache for immunity to every continuation conflict |
 | `captureRequestBodies` | `false` | Write the exact body of each dispatch to `captureDir`. The **schema** default is `false`; this bundle's own patch sets it `true`, so capture is on for any profile that mounts it. A capture is a complete transcript and nothing in it is redacted |
 | `captureDir` | — | Required when capture is on; turning capture on without it is refused at resolve time |
 | `captureMaxFiles` | 50 | Captures kept before the oldest is deleted. Only files this connector wrote are eligible |
@@ -148,17 +147,18 @@ own continuation. Full entry: `docs/lessons-learned.md` §3.3.
 `meridian_session_key` is the connector's to choose, and it is the whole reset mechanism: Meridian keys
 its live CLI conversation by that string, and a key it has not seen starts a new one. Two things use it.
 
-**The recovery retry rotates it.** A request the old conversation has already refused cannot win the
-same way twice — the verdict is deterministic for the history that conversation holds — and a wedged
-live process will not answer at all. So the single retry after a refusal is sent under
-`<session>#r<n>`, which leaves the pin untouched: the next turn goes back to the bare session id rather
-than stranding the session on a rotated key. The suffix is there so a capture or a log line still names
-the harness session it belongs to.
+**The recovery retry rotates it, and the rest of that turn stays on the rotated key.** A request the old
+conversation has already refused cannot win the same way twice — the verdict is deterministic for the
+history that conversation holds — and a wedged live process will not answer at all. So the retry after a
+refusal is sent under `<session>#r<n>`. Every later step of that turn stays there too: the model issues new
+tool calls in that conversation, and Meridian resolves a continuation by tool-id ownership, so a step that
+returned to the bare id would present results for calls the pinned conversation never issued. The next turn
+opener returns to the bare session id. The suffix is there so a capture or a log line still names the
+harness session it belongs to.
 
-**`conversationMode: 'per-request'` rotates it on every dispatch**, so no request is ever a continuation
-and the prefix comparison never runs. Meridian's own capability list says mismatched requests replay
-history, which is what makes this viable. The cost is real — no live-process reuse, no prefix cache — so
-it is opt-in and `pinned` remains the default.
+There is no mode that replays every request. Reusing the live conversation is the point of the connector,
+and a replay is the path that loses history on this provider: `agy` keeps about 192,000 bytes of an input
+step and drops the tail, which is the newest messages.
 
 Neither of these is a substitute for fixing the cause of a refusal. A reset buys a dispatch; it does not
 stop the next request from moving the prefix again. `session-bf5d76c6` is the evidence: after one repair

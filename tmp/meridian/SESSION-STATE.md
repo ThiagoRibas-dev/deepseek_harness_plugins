@@ -185,3 +185,15 @@ that follow from it, the installed build path, and the official doc links. Defau
 `MAX_TURNS` capped at 1, `EARLY_STOP=1`, `UNCAPTURED_TOOL_RECOVERY` off (confirmed rejection only),
 `COMPACTION_SURVIVAL=0` (summary replayed into a fresh session), `UPSTREAM_IDLE_MS=90000`,
 `SESSION_TURN_MAX_HOLD_MS=600000`.
+
+## Settled 2026-10-29 — two options removed for good
+
+- **`per-request` conversation mode: deleted.** Schema entry, `conversationKey` branch, log variant, README
+  and connector-notes sections, and its unit test (`session-stateless`). Every request would have been a
+  replay; replay is the path that loses history on this provider (agy keeps ~192,000 bytes of an input step
+  and drops the rest, history last). Ignore the older notes above that treat it as a live option.
+- **Harness patch: deleted.** `patches/compaction-checkpoint-framing.patch` is gone, as is every reference.
+  The connector's own `reframeCheckpoint` does the job at the dispatch boundary. Ignore the older notes above
+  that tell you to decide about applying it.
+
+Both decisions are recorded in `pending-work.md` §9 as "do not reopen".

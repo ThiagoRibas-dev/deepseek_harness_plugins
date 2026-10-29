@@ -99,8 +99,8 @@ same "deterministic everywhere" rule.
 - it duplicates machinery the harness already owns, for a fix that approach B delivers at the dispatch
   boundary with none of that risk.
 
-The corresponding *harness* change exists as an unapplied patch
-(`patches/compaction-checkpoint-framing.patch`) and stays unapplied by decision.
+The harness is not patched. The connector rewrites the checkpoint preamble at the dispatch boundary, which is
+where the wire is shaped, and that decision is settled in `pending-work.md`.
 
 ## Test plan
 

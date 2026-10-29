@@ -179,13 +179,13 @@ without provider visibility.
 
 ## 7. Decision matrix
 
-| State | Pre-reset | With rotation | With `per-request` | With sticky splice |
-| --- | --- | --- | --- | --- |
-| 3 — repair, then the turn ends | works | works | n/a (no repair) | works |
-| 4 — repair, then another tool call | **cascades** | **works, untested** (§3.4) | works | works, if indices survive |
-| 8 — two repairs in one turn | **cascades** | **works, untested** | works | works, needs offset arithmetic |
-| 9 — rewrite between retry and next step | fails | **fails** | works (nothing to reproduce) | fails |
-| Invisible first refusal (§6) | unrecoverable | recoverable in `#r1` | improbable (no continuation) | unrecoverable unless it seeds a splice |
+| State | Pre-reset | With rotation | With sticky splice |
+| --- | --- | --- | --- |
+| 3 — repair, then the turn ends | works | works | works |
+| 4 — repair, then another tool call | **cascades** | **works, untested** (§3.4) | works, if indices survive |
+| 8 — two repairs in one turn | **cascades** | **works, untested** | works, needs offset arithmetic |
+| 9 — rewrite between retry and next step | fails | **fails** | fails |
+| Invisible first refusal (§6) | unrecoverable | recoverable in `#r1` | unrecoverable unless it seeds a splice |
 
 ## 8. What this means
 
@@ -194,7 +194,11 @@ without provider visibility.
   conversation that is then thrown away, instead of into a conversation that must be continued.
 - The remaining real exposure is row 9, and it is unmeasured in either direction.
 - The sticky splice is only worth building if §3.4 fails. If §3.4 holds, it is complexity with no
-  beneficiary, and `per-request` remains the only thing that fixes row 9.
+  beneficiary.
+- `per-request` mode was removed from the connector: it made every request a replay, and replay is the path
+  that loses history on this provider — `agy` keeps about 192,000 bytes of an input step and drops the rest,
+  and the history sits last. Row 9 needs no fix of its own: the provider replays a compaction summary into a
+  fresh session rather than refusing it.
 
 ---
 
