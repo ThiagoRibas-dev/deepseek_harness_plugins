@@ -1,0 +1,60 @@
+This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.
+
+<compacted-summary>## Primary Request and Intent
+- Analyze campaign file storage redundancies across the D&D 3.5 preset plugin (`plugins/dsh-dd35-preset/`).
+- Document identified campaign storage redundancies and candidate architectural revisions in `docs/dd35/handoff.md` and `scratchpad.md`.
+- Apply approved comment revisions across `plugins/dsh-dd35-preset/doctor.js`, `plugins/dsh-dd35-preset/memory.js`, `plugins/dsh-dd35-preset/context-index.js`, and `plugins/dsh-dd35-preset/state-store.js`.
+- Preserve test suite stability across all 231 unit tests (`node --test plugins/dsh-dd35-preset/tests/*.test.mjs`).
+
+## Key Technical Concepts
+- D&D 3.5 preset plugin (`plugins/dsh-dd35-preset`) operating under DeepSeek Harness (`dsh`) / Cordis.
+- Node.js built-in test runner (`node --test plugins/dsh-dd35-preset/tests/*.test.mjs`).
+- Campaign storage architecture and identified redundancy points:
+  - Entity presence tracking split across `state.json` (`scene.entities`), transcript headers (`- Entities:` in `events/transcripts/NNNN_turn.md`), `events/memory_index.json`, and memory co-occurrence structures.
+  - Scene location tracking duplicated across `state.json` (`scene.location`), transcript headers (`- Location:`), `events/memory_index.json`, and transition triggers in `context-index.js`.
+  - Dual directory entity storage (`player/` vs. `actors/`) requiring precedence in `loadAnyEntity`, shadowing detection (`doctor.js`), and deduplication (`context-index.js`).
+  - Condition tracking split across persistent entity sheet `conditions` arrays and `state.json` (`combat.conditions` / `combat.combatants`).
+- Candidate architectural mitigations:
+  - On-demand derived indexing or treating `events/memory_index.json` as an ephemeral cache.
+  - Unified entity directory (`entities/`) with a `type: 'pc' | 'npc'` discriminator.
+  - Authoritative scene presence confined to `state.json`, treating transcript headers as read-only historical logs.
+
+## Files and Code
+- `plugins/dsh-dd35-preset/state-store.js`: storage layout definition (`state-store.js:4–15`); pending comment edits.
+- `plugins/dsh-dd35-preset/memory.js`: turn completion transcript header writer (`memory.js:192–198`) and header parser for `events/memory_index.json` (`memory.js:6–12`); pending comment edits.
+- `plugins/dsh-dd35-preset/context-index.js`: disk transcript parsing for presence / co-occurrence (`context-index.js:83–105`) and entity deduplication (`context-index.js:63–65`); pending comment edits.
+- `plugins/dsh-dd35-preset/doctor.js`: diagnostics for entity directory shadowing (`doctor.js:167–168`) and orphaned condition states (`doctor.js:266`); pending comment edits.
+- `plugins/dsh-dd35-preset/cordis.patch.yml`: clean comment revisions applied and verified.
+- `plugins/dsh-dd35-preset/scene-state.js`: clean comment revisions applied and verified.
+- `docs/dd35/handoff.md`: target for the "Campaign Storage and File Redundancy Revision" documentation under Open Architectural Items.
+- `scratchpad.md`: target for cross-referencing campaign redundancy documentation and task tracking.
+- `plugins/dsh-dd35-preset/tests/*.test.mjs`: unit test suite (231 passing tests across 12 suites).
+
+## Errors and Fixes
+- (none)
+
+## Pending Jobs
+- Append the "Campaign Storage and File Redundancy Revision" section into `docs/dd35/handoff.md` under Open Architectural Items.
+- Cross-reference the redundancy entry and plan updates in `scratchpad.md`.
+- Apply approved comment revisions to `plugins/dsh-dd35-preset/doctor.js`, `plugins/dsh-dd35-preset/memory.js`, `plugins/dsh-dd35-preset/context-index.js`, and `plugins/dsh-dd35-preset/state-store.js`.
+- Execute `node --test plugins/dsh-dd35-preset/tests/*.test.mjs` to ensure all 231 tests pass after edits.
+
+## Current Work
+- Pre-change test verification executed twice via `node --test plugins/dsh-dd35-preset/tests/*.test.mjs`, confirming all 231 tests passing cleanly (0 failures, 0 skipped).
+- Ready to proceed with documentation updates in `docs/dd35/handoff.md` and `scratchpad.md`.
+
+## Next Step
+- Append the documented "Campaign Storage and File Redundancy Revision" entry to `docs/dd35/handoff.md` and update `scratchpad.md`.
+
+## Critical Context
+- Content for `docs/dd35/handoff.md` under Open Architectural Items:
+  - *Objective*: Consolidate overlapping campaign state stored across `state.json`, transcript headers, `events/memory_index.json`, and entity sheets.
+  - *Identified Redundancies*:
+    1. Entity Presence: `state.json`, markdown headers (`- Entities:`), `events/memory_index.json`, and memory co-occurrence index.
+    2. Scene Location: `state.json`, transcript headers (`- Location:`), and `events/memory_index.json`.
+    3. Entity Directory Partitioning: Identical schemas split between `player/` and `actors/`, requiring precedence resolution and shadowing checks.
+    4. Condition State Partitioning: Split between sheet `conditions` arrays and `state.json` combat counters.
+  - *Candidate Revisions*: On-demand ephemeral indexing for `events/memory_index.json`, unified `entities/` folder with `type: 'pc' | 'npc'`, and `state.json` as sole authoritative scene presence source.
+- Comment changes across `doctor.js`, `memory.js`, `context-index.js`, and `state-store.js` are pre-approved and strictly non-functional.
+- All 231 unit tests must remain passing after every edit.
+</compacted-summary>

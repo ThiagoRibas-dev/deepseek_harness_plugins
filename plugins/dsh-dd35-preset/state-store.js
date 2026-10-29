@@ -9,15 +9,13 @@
  *   campaign/<id>/player/<entity>.json       character sheets (per-entity truth: HP, AC, conditions, resources)
  *   campaign/<id>/actors/<entity>.json       NPC/actor sheets
  *
- * Division of truth (no field lives in two places):
- *   state.json   -> session facts: mode, clock, initiative order/index, scene, present entities
- *   entity sheet -> per-entity facts: hp, temp_hp, ac, conditions, resources, position, stats
+ * Data partitioning schema (non-overlapping fields):
+ *   state.json   -> session-level state: mode, clock, initiative order/index, scene, present entities
+ *   entity sheet -> entity-level state: hp, temp_hp, ac, conditions, resources, position, stats
  *
- * Every campaign path resolves against the *session's* workspace — the folder
- * the user opened, taken from `session.header.cwd` — and never against the
- * folder this bundle happens to live in. The root is bound per tool call and per
- * memory hook. An explicit `workspace` config pins it instead, for standalone
- * use and tests.
+ * Campaign file paths resolve against the active session's workspace root (from
+ * `session.header.cwd`) rather than the plugin installation directory.
+ * The root is bound per tool invocation and memory hook, or specified explicitly via configuration for testing.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -55,9 +53,8 @@ export function bindWorkspaceFromExec(exec) {
 }
 
 /**
- * Wrap one tool's execute so every campaign path it touches resolves against the
- * calling session. Tool bodies in this preset are synchronous, so a binding
- * cannot be displaced before the body finishes.
+ * Wraps tool execution to bind the active campaign and workspace root to the invoking session.
+ * Because preset tool handlers execute synchronously, execution bindings remain isolated per invocation.
  */
 export function bounded(execute) {
   return (args, exec) => {
@@ -161,11 +158,9 @@ export function loadEntityIn(root, id, entityId, kind = 'pc') {
 /**
  * Campaign identifiers: the directories under `campaign/` that hold a state file.
  *
- * Membership is decided by the file, not by a list of reserved names. A campaign
- * *is* a directory with a `state.json` — that is what every loader here requires —
- * so `player/`, `setting/` and anything else the setup writes beside them are
- * excluded for not having one, and a campaign that this file has never heard of
- * still appears.
+ * Valid campaigns are identified by the presence of a `state.json` file within their
+ * directory. Subdirectories lacking a state file (such as `player/` or `setting/`) are
+ * excluded from campaign listings.
  */
 export function listCampaignIds() {
   const root = campaignRoot()
@@ -208,14 +203,11 @@ export function writeRegistry({ active, title, setting }) {
 // ---- session → campaign binding ------------------------------------------
 
 /**
- * Sessions created before this instant keep resolving through the registry, so
- * shipping this feature does not detach a campaign from a session already in
- * play. Every session created after it starts with **no campaign** and must be
- * bound by a choice the player made.
+ * Sessions created prior to this timestamp resolve via the active campaign registry
+ * for backward compatibility. Sessions created after this timestamp initialize without
+ * a bound campaign and require explicit selection or inheritance from a parent session.
  *
- * A constant rather than a file field: nothing has to be written to establish
- * it, so the first request of a new chat is already correct. Forks created after
- * it inherit through {@link resolveSessionCampaignIn}'s parent rule.
+ * This timestamp constant enables deterministic session binding without modifying filesystem metadata.
  */
 export const SESSION_BINDING_SINCE = Date.parse('2026-10-09T18:59:35Z')
 
@@ -301,16 +293,15 @@ export function writeSessionBindingIn(root, sessionId, campaignId) {
 /**
  * Which campaign one session is playing, and why.
  *
- * The order matters and each rule earns its place:
+ * Precedence hierarchy for session-to-campaign resolution:
  *
- *   `bound`     — the player chose, or `route_turn` pinned a legacy resolution.
- *   `inherited` — a fork with no entry of its own follows its parent.
- *   `legacy`    — created before {@link SESSION_BINDING_SINCE}, so the registry's
- *                 active campaign still governs it. This is the whole migration.
- *   `none`      — a session created since, unbound. A brand-new chat.
+ *   `bound`     — explicit session binding or pinned legacy resolution.
+ *   `inherited` — fork session inheriting binding from an ancestor session.
+ *   `legacy`    — session predating {@link SESSION_BINDING_SINCE}, resolving via active registry.
+ *   `none`      — unconfigured session created after {@link SESSION_BINDING_SINCE}.
  *
- * Never throws: this runs on the prompt-assembly path, where a throw kills the
- * session before its first token.
+ * This function handles missing or malformed records without throwing exceptions,
+ * ensuring prompt assembly completes during session initialization.
  *
  * @returns `{ id, source }`; `id` is null when the session has no campaign.
  */
@@ -319,9 +310,8 @@ export function resolveSessionCampaignIn(root, session) {
     const sessionId = session?.header?.id
     const bound = readSessionBindingIn(root, sessionId)
     if (bound !== undefined) {
-      // A binding to a campaign directory that no longer exists is a finding for
-      // `dd35_doctor`, not a campaign: resolve it as unbound rather than handing
-      // every tool a path that cannot load.
+      // If the bound campaign directory does not exist on disk, resolve as unbound
+      // to prevent downstream file read failures; reported as a diagnostic finding by dd35_doctor.
       const real = typeof root === 'string' && root.length > 0 && existsSync(campaignDirIn(root, bound))
       return real ? { id: bound, source: 'bound' } : { id: null, source: 'none' }
     }
@@ -334,7 +324,7 @@ export function resolveSessionCampaignIn(root, session) {
     if (typeof sessionId === 'string' && sessionId.length > 0) seen.add(sessionId)
     let ancestor = parentOf(session)
     for (let depth = 0; depth < MAX_ANCESTORS && ancestor !== null; depth += 1) {
-      // A cycle is not resolvable: stop rather than spin.
+      // Cycle detected in session ancestry chain; terminate traversal.
       if (seen.has(ancestor)) break
       seen.add(ancestor)
       const inherited = readSessionBindingIn(root, ancestor)
@@ -476,11 +466,10 @@ export function loadEntities(id, kind = 'pc') {
 /**
  * Compact, model-facing projection of one entity sheet.
  *
- * Lives here, in the data layer, so the prompt builder and the `get_state` tool
- * render entities through the *same* function — the spec's §4.1.2 requirement
- * that the injected block and the tool result cannot disagree about what an
- * entity is. Widening this is the single change that removes the DM's need for a
- * second read of the sheet (spec §4.4).
+ * Defined in the data access layer so prompt assembly and `get_state` tool formatting
+ * execute the identical projection function (spec §4.1.2 consistency requirement).
+ * Including expanded entity statistics in this projection eliminates secondary entity
+ * read operations during turn resolution (spec §4.4).
  *
  * Layering: `conditions` stays names-only and always renders; the bundled
  * `condition_effects` follows it, so a byte cap truncates the prose before the
@@ -517,8 +506,8 @@ export function briefEntity(entity, { includeDetail = true } = {}) {
  * The campaign a tool call operates on.
  *
  * An explicit id wins. Otherwise the campaign attached to the calling session.
- * A session that has no campaign attached gets an error rather than a guess —
- * that is what makes a brand-new chat start empty.
+ * Sessions without an assigned campaign throw an explicit error rather than defaulting
+ * to the registry, ensuring uninitialized sessions prompt for campaign selection.
  */
 export function requireCampaign(explicit) {
   const id = explicit ?? resolveSessionCampaign().id

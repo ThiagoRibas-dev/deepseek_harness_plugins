@@ -11,10 +11,10 @@
  *      snippets, `fetch_memories` expands the ones the model picks, and
  *      `list_memories` returns the scene index.
  *
- * Capture point: `agent/turn-stopping` (serial, awaited, the last moment before
- * the turn boundary commits) takes the snapshot; `turn/end` with
- * `reason.kind === "completed"` commits it. Splitting the two is what keeps a
- * blocked or max-tokens turn out of the canonical record.
+ * Capture point: `agent/turn-stopping` (serial, awaited, prior to committing the turn
+ * boundary) captures state snapshot; `turn/end` with `reason.kind === "completed"`
+ * commits to transcripts and indices. This separation prevents incomplete, blocked,
+ * or token-exhausted turns from being committed to the persistent log.
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
@@ -43,23 +43,18 @@ const committed = new Map()
 
 const key = (sessionId, turn) => `${sessionId}:${turn}`
 
-/** Only the campaign's own session writes memory — a subagent turn is not canon. */
+/** Only the root campaign session writes memory; subagent turns are excluded from campaign transcripts. */
 function isMainSession(session) {
   return session?.header?.origin !== 'subagent'
 }
 
 /**
- * Genuine player input: a user-role message carrying the client-minted `rpcId`
- * that only the prompt path sets.
+ * Validates user-role input originating directly from the user prompt path via client-minted `rpcId`.
  *
- * The rpcId is the load-bearing part. `SessionCommandController.prompt()` mints
- * one from the request id for every prompt the Web client sends, while a
- * producer that injects model-facing content as a user-role message has none.
- * Keying on `kind === 'user'` alone was not enough: `dsh-context-pressure` used
- * exactly that kind for its pre-compaction notice, so the notice was captured as
- * the player's turn — written into the transcript as the player's own words. That plugin now declares `kind: 'context-pressure'`,
- * and this is the second line of defence against the next producer that reuses
- * `user` for a role reason.
+ * `SessionCommandController.prompt()` assigns an `rpcId` derived from the request id
+ * for client-submitted prompts. Automated plugins that inject messages with role `'user'`
+ * do not include an `rpcId`. Filtering by `rpcId` prevents system notices (such as
+ * compaction warnings) from being recorded as user input in turn transcripts.
  *
  * Known exception: ACP delivers real prompts as `{ kind: 'user' }` with no rpcId
  * (`acp/session.ts:293`). A session driven that way records no turns under this
@@ -118,21 +113,20 @@ function textOf(message) {
  * Injected notice kinds that ask the model to do work rather than telling it
  * something.
  *
- * A notice of one of these kinds is a task. Whatever the model says while
- * carrying it out is about the notice, not about the player, so it must not be
- * recorded as the DM's reply.
+ * Notices of these kinds represent automated tasks. Output generated while
+ * executing these tasks pertains to system notices rather than player actions
+ * and is excluded from the recorded assistant turn.
  *
- * `context-pressure` is the one observed doing this. It lands mid-turn at the
+ * `context-pressure` is an observed instance. It lands mid-turn at the
  * pre-step boundary and asks the model to write a resumption note; in
  * `seventh_moon` turn 137 the model answered the player's action, then the
  * notice arrived, and the model closed the turn with an OOC status report about
  * the file it had written — which became the recorded reply, while the real one
  * was discarded.
  *
- * Add a kind here when a new producer starts asking for work. Reporting kinds
- * (`runtime-context`, `skill-catalog`, `tool-jobs`, `subagent-settled`) do not
- * belong: the model keeps working normally after them, and its last message is
- * still the reply.
+ * Register message kinds that trigger secondary execution cycles. Informational kinds
+ * (`runtime-context`, `skill-catalog`, `tool-jobs`, `subagent-settled`) do not divert
+ * dialogue flow, so the final assistant message remains the recorded response.
  */
 const WORK_REQUESTING_NOTICE_KINDS = new Set(['context-pressure'])
 
@@ -240,8 +234,8 @@ function capture(ctx, session, turn) {
     // A turn with no fresh player input (an agent-initiated continuation) is
     // not a new exchange, so there is nothing to record.
     if (!captured.player) return
-    // A connector notice is not fiction. The turn completed, but the DM produced
-    // nothing, so this is not canon for the same reason an errored turn is not.
+    // Connector notices represent transport and fallback metadata rather than narrative text;
+    // they are omitted from the campaign transcript.
     if (isConnectorNotice(captured.dm)) {
       ctx.logger.debug(`dd35-memory: turn ${turn} produced only a connector notice; not recording it`)
       return
@@ -275,7 +269,7 @@ export function apply(ctx, config = {}) {
     const pendingKey = key(session.id, turn)
     const stash = pending.get(pendingKey)
     pending.delete(pendingKey)
-    // An aborted, errored, blocked, or truncated turn is not canon.
+    // Incomplete, errored, blocked, or truncated turns are not committed to transcripts.
     if (event.data.reason?.kind !== 'completed') return
     if (committed.has(pendingKey)) return
     committed.set(pendingKey, true)
@@ -434,8 +428,7 @@ function registerTools(ctx) {
           turn: turn.number,
           title: turn.title,
           date: turn.date,
-          // Hand these straight to fetch_memories: without them, reading a named
-          // turn means synthesising the id shape and hoping the padding is right.
+          // Provide formatted turn identifiers directly for fetch_memories to avoid manual zero-padding.
           ids: messagesOf(turn).map((message) => message.id),
           opening: clip(turn.dm, 160),
         })),

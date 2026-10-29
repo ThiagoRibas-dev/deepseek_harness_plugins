@@ -21,7 +21,8 @@ sessions another, and the policy is editable without a harness restart.
 > weak explanation. The connector's own catalogue splits its 52 conflicts three ways (21 pruned, 16 model
 > change, ~12 neither), and the prune/conflict correlation is confounded by session length. Keeping the policy
 > off for Meridian-routed presets is precaution, not a demonstrated verdict; `lessons-learned.md` §3.2 records
-> what is actually known and how to identify a cause with `captureRequestBodies`.
+> what is actually known and how to identify a cause from the request captures, which are on in this
+> deployment.
 
 > **⚠️ rev 2 — the strip is a Host-plane pass, not a `ToolResultPruner` service.**
 > §2.1's original composition change mounted the service inside the `dd35` preset's
@@ -338,5 +339,5 @@ here rather than left implicit.
       `MERIDIAN_CONTINUATION_CONFLICT`. Session `4ba1929e` refused its second continuation after the
       pass rewrote two results, and Meridian pruned sessions conflict more often (10/12 vs 22/63),
       but the prune ran outside the documented window and the correlation is confounded by session
-      length. The cause is not provable from the log. Settle it with `captureRequestBodies` and a
-      dispatched-body diff before enabling the strip on a Meridian-routed preset.
+      length. The cause is not provable from the log. Settle it by diffing the captured dispatch against
+      the previous one — capture is already on — before enabling the strip on a Meridian-routed preset.

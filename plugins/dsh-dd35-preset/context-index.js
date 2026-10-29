@@ -7,11 +7,10 @@
  * unresolved.** Retrieval over these answers "these people, this place, that
  * business" — exactly, and with no model call anywhere.
  *
- * This is deliberately not semantic search. Everything here is counting and
- * exact matching over files that already exist, so it costs nothing per turn and
- * every result can be traced back to the turn it came from. The semantic layer
- * stays deferred (§12.7): both providers configured in this profile are
- * external, so per-turn inference would be a recurring bill.
+ * This implementation uses deterministic string and token matching over indexed transcripts
+ * rather than semantic vector search, avoiding secondary LLM inference calls or embedding
+ * generation on the active turn path. Semantic search remains deferred (§12.7) to prevent
+ * external API latency and token overhead during per-turn execution.
  *
  * Layering: `context-index.js` is pure — it reads parsed transcripts and the
  * entity roster and returns plain data. `scene-state.js` does the same kind of
@@ -60,9 +59,8 @@ function rosterMatchers(root, id) {
       const needles = [entityId, String(sheet.name ?? '').split(' (')[0].trim()]
         .filter((needle) => typeof needle === 'string' && needle.length > 2)
       if (needles.length === 0) continue
-      // One matcher per id: an id can exist in both player/ and actors/ (the
-      // duplicate trap `dd35_doctor` reports), and counting it twice would
-      // double every co-occurrence it takes part in.
+      // One matcher per unique entity id. If an entity exists in both player/ and actors/
+      // directories, indexing once prevents duplicated co-occurrence counts.
       if (out.some((entry) => entry.id === entityId)) continue
       out.push({ id: entityId, re: new RegExp(`\\b(?:${needles.map(escapeRe).join('|')})\\b`, 'i'), pc: kind === 'pc' })
     }
@@ -96,9 +94,8 @@ export function buildContextRecords(turns, matchers = [], options = {}) {
   return list.map((turn) => {
     const prose = `${turn.player ?? ''}\n${turn.dm ?? ''}`
 
-    // The header's `- Entities:` is the DM's own record of who was present, so it
-    // wins when present. Otherwise presence is inferred from the prose, which is
-    // a candidate signal rather than a fact and is labelled as such.
+    // The transcript header `- Entities:` takes precedence as explicit presence data.
+    // If absent, presence is extracted from narrative prose regex matching and marked as inferred.
     const headerActors = Array.isArray(turn.entities) ? turn.entities.filter(Boolean) : []
     const proseActors = matchers.filter((matcher) => matcher.re.test(prose)).map((matcher) => matcher.id)
     const actors = headerActors.length > 0 ? [...new Set(headerActors)] : [...new Set(proseActors)]
@@ -123,15 +120,14 @@ export function turnsWith(records, entityId) {
 }
 
 /**
- * Entity ids in the current scene whose previous appearance was long ago.
+ * Returns entity ids in the current scene whose last recorded appearance exceeds the return threshold.
  *
- * This is the trigger the section exists for: someone walks back on stage after
- * an absence, and the campaign's history with them becomes relevant again.
+ * Detects entities reappearing in the scene after an extended absence, retrieving historical
+ * transcript context for the current turn.
  */
 export function returningActors(records, sceneActors, currentTurn, options = {}) {
   const opts = { ...DEFAULTS, ...options }
-  // A player character is present by definition; their absence from the record
-  // means the DM stopped listing them, not that they left. Only NPCs return.
+  // Player characters remain continuously present in campaign context; return tracking applies strictly to NPCs.
   const skip = new Set(opts.playerCharacters ?? [])
   const before = records.filter((record) => record.turn < currentTurn)
   const returning = []
@@ -149,9 +145,8 @@ export function returningActors(records, sceneActors, currentTurn, options = {})
 /**
  * Score and rank candidate turns for the current scene.
  *
- * Every candidate carries the reasons it was retrieved, so the DM can judge
- * whether it is relevant instead of trusting a number. Turns inside the recent
- * window are dropped: surfacing what the DM can already read is noise.
+ * Each candidate record includes explicit match criteria (entity co-occurrence, location match).
+ * Turns within the recent turn window are excluded because they remain present in active conversation context.
  *
  * @returns `{ trigger, candidates }` — `trigger` is null when nothing fired.
  */

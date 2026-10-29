@@ -1,0 +1,37 @@
+Yes — the failure mode in `Review Unstaged Git Files` is **`MERIDIAN_BATCH_SPENT`**, which is a known, documented failure mode in the Meridian-Antigravity connector.
+
+---
+
+### 1. What Happened in `Review Unstaged Git Files`
+
+- **Session:** [session.v4.jsonl.zstd](</root/.dsh/sessions/--export-DownloadsSSD-Projects-Game~0020Dev-rogue-like--/session-857354e7-abc1-4f11-ae92-de1d172d2c0c/session.v4.jsonl.zstd>) (`session-857354e7-abc1-4f11-ae92-de1d172d2c0c`, workspace `/export/DownloadsSSD/Projects/Game Dev/rogue-like`, model `meridian-antigravity` / `gemini-4-argon-high`).
+- Both **Turn 2 (`seq: 205–211`)** and **Turn 4 (`seq: 232–391`)** terminated with `MERIDIAN_BATCH_SPENT`:
+  ```text
+  code: "MERIDIAN_BATCH_SPENT"
+  message: "Meridian accepted this turn's tool results and the generation ended before any reply, so the batch is spent: re-sending the same request can only be refused as a continuation conflict. The conversation itself is intact. Re-issue the instruction as a new message, or fork the session from before this turn. (Meridian Antigravity stream ended before message_stop (Antigravity turn timed out))"
+  ```
+- **Timeline of Turn 4 (`seq: 232–391`):**
+  1. The agent ran a 26-step tool loop (including mid-turn compaction at `seq: 283–286`).
+  2. At **Step 26 (`seq: 384–386`)**, the model called `bash` (`git log -n 25 --oneline`, call ID `toolu_agy_fed242c258d642ecabbd75825cc00772`) and the harness recorded `tool/result` at `1792503061250`.
+  3. At **Step 27 (`seq: 388–391`)**, the harness sent the `tool_result` continuation at `1792503061382`. Seven seconds later (`1792503068396`), the SSE stream ended before `message_stop` with `Antigravity turn timed out`, terminating the turn with `MERIDIAN_BATCH_SPENT`.
+
+---
+
+### 2. Where It Is Documented & Implemented
+
+| Topic | Documentation / Source | Summary |
+| :--- | :--- | :--- |
+| **`MERIDIAN_BATCH_SPENT` error semantics** | [lessons-learned.md:403–423](<docs/lessons-learned.md#L403-L423>) (§3, §3.1) | Documented as *"Tool results were consumed, generation died before any reply."* Because Meridian consumes (`accept()`) the `tool_result` batch before streaming the reply, automatic retry of the same request would fail with HTTP `409` (`already consumed` / `MERIDIAN_CONTINUATION_CONFLICT`). |
+| **Spent-batch design & ledger analysis** | [spent-batch-plan.md:15–39](<docs/plugins/dsh-meridian-antigravity/spent-batch-plan.md#L15-L39>), [spent-batch-plan.md:110–120](<docs/plugins/dsh-meridian-antigravity/spent-batch-plan.md#L110-L120>) | Documents the spent-batch lifecycle on `tool-result` continuations and records `[504] x2 turn timed out` in the Meridian state ledger alongside `502` content-filter blocks and agent disconnects. |
+| **Connector implementation** | [errors.js](<plugins/dsh-meridian-antigravity/lib/errors.js>), [failure.js](<plugins/dsh-meridian-antigravity/lib/failure.js>), [stream.js:130–133](<plugins/dsh-meridian-antigravity/lib/stream.js#L130-L133>), [transport.js](<plugins/dsh-meridian-antigravity/lib/transport.js>) | When an SSE stream on a `tool-result` continuation ends before `message_stop`, `streamInterrupted()` ([stream.js:132](<plugins/dsh-meridian-antigravity/lib/stream.js#L132>)) is upgraded by `spentIfContinuation()` in [errors.js](<plugins/dsh-meridian-antigravity/lib/errors.js>) from retryable `TRANSPORT` to non-retryable `MERIDIAN_BATCH_SPENT`. |
+
+---
+
+### 3. Two Nuances Observed in This Session
+
+1. **Upstream trigger (`Antigravity turn timed out` on long multi-step turns):**
+   - [lessons-learned.md:418–419](<docs/lessons-learned.md#L418-L419>) specifically cites `503 UNAVAILABLE (No capacity available)` as the upstream cause of `MERIDIAN_BATCH_SPENT`, while [spent-batch-plan.md:15–39](<docs/plugins/dsh-meridian-antigravity/spent-batch-plan.md#L15-L39>) focuses on content-filter stream cuts (with `turn timed out` noted in the ledger table at [spent-batch-plan.md:117](<docs/plugins/dsh-meridian-antigravity/spent-batch-plan.md#L117>)).
+   - In [session.v4.jsonl.zstd](</root/.dsh/sessions/--export-DownloadsSSD-Projects-Game~0020Dev-rogue-like--/session-857354e7-abc1-4f11-ae92-de1d172d2c0c/session.v4.jsonl.zstd>), the stream cut on Step 27 happened after only `7,014 ms` on that step (`1792503061382` → `1792503068396`), hitting the cumulative `Antigravity turn timed out` limit across the multi-step turn (~312 seconds after compaction ended).
+2. **Recoverability without forking:**
+   - Although Turn 2 (`seq: 211`) and Turn 4 (`seq: 391`) ended with `turn/end` error `MERIDIAN_BATCH_SPENT` (leaving the last transcript item as `tool/result`), sending a new user message in **Turn 3 (`seq: 213–229`)** succeeded immediately without forking, because the new user message makes the next dispatch an ordinary turn rather than a bare `tool_result` continuation.
+   - You can resume `Review Unstaged Git Files` the same way by sending a follow-up message asking the agent to summarize the git status and log output it already collected.

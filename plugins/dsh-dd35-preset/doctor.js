@@ -3,19 +3,18 @@
  *
  * Spec: docs/dd35-memory-model-improvement.md §9.3.
  *
- * Reports the campaign's *authoring debt*: places where the files disagree with
- * themselves or with what the table established. Every check here was chosen
- * because it is currently failing somewhere in a real campaign — the point is
- * to make silent gaps loud, not to enforce a schema.
+ * Reports campaign state inconsistencies: places where files disagree with
+ * each other or deviate from established campaign data structures. Every check here
+ * detects an inconsistency identified during campaign log analysis, identifying
+ * unindexed entities, malformed files, or unreferenced stubs.
  *
- * Two rules govern this module, and both are load-bearing:
+ * Two operational invariants govern this module:
  *
- *  1. **Read-only.** It never writes, ever. In particular it uses `loadState`,
- *     never `requireState`, because the latter *self-heals by creating*
- *     `state.json` — a write on what is supposed to be a read path.
- *  2. **It never throws.** A missing campaign, an unreadable directory, corrupt
- *     JSON: each is a *finding*, not an exception. A diagnostic that can crash
- *     the turn it was meant to help is worse than no diagnostic.
+ *  1. **Read-only.** It does not write to the filesystem. In particular it uses `loadState`,
+ *     never `requireState`, because `requireState` creates `state.json` if absent,
+ *     which alters campaign state during a diagnostic check.
+ *  2. **It never throws.** A missing campaign, an unreadable directory, or corrupt
+ *     JSON produces a diagnostic finding rather than throwing an unhandled exception.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
@@ -30,7 +29,7 @@ import { memoryIndexPath, parseTranscript, UNTITLED } from './memory-store.js'
 export const name = 'dd35-doctor'
 export const inject = ['tools']
 
-/** A provisional stub older than this many turns is authoring debt worth naming. */
+/** A provisional stub older than this threshold in turns is reported as unresolved. */
 const PROVISIONAL_AGE_TURNS = 10
 
 // ---- reporting primitives ------------------------------------------------
@@ -58,7 +57,7 @@ function parseFile(path, findings, check, label) {
   }
 }
 
-/** Entity sheets in one campaign, both directories, tagged with their home. */
+/** Entity sheets in one campaign, across player/ and actors/ directories, tagged with their source directory. */
 function loadSheets(id, findings) {
   const sheets = []
   for (const [dir, kind] of [[playerDir(id), 'pc'], [actorsDir(id), 'npc']]) {
@@ -84,13 +83,12 @@ function turnNumbers(id) {
 }
 
 /**
- * True when a sheet still carries exactly the values `defaultEntity` invents.
+ * Returns true when an entity sheet contains values identical to `defaultEntity` defaults.
  *
- * This is the fingerprint of a fabrication: `init_combat` / `add_combatant` call
- * `defaultEntity` on a lookup miss, so an unknown id drafted into combat acquires
- * `hp 1, max_hp 1, ac 10` and becomes indistinguishable from an authored sheet
- * afterwards. An authored 1-HP rat matches too — the check reports, it does not
- * accuse (spec §7).
+ * When `init_combat` or `add_combatant` encounters an unindexed entity id, it invokes
+ * `defaultEntity`, assigning baseline statistics (`hp 1, max_hp 1, ac 10`). This check
+ * detects sheets matching these baseline properties so unconfigured entities can be
+ * distinguished from authored combatants (spec §7).
  */
 function looksFabricated(sheet) {
   const base = defaultEntity(sheet.id ?? '', { kind: sheet.kind })
@@ -135,7 +133,7 @@ export function diagnoseCampaign(id) {
   counts.sceneEntities = sceneEntities.length
   const lastTurn = Number.isFinite(state.last_turn?.number) ? state.last_turn.number : 0
 
-  // 1 — scene ids with no sheet. The Maude case: on stage, no sheet anywhere.
+  // 1 — scene entity ids without a corresponding sheet in player/ or actors/.
   for (const entityId of sceneEntities) {
     if (typeof entityId !== 'string') {
       findings.push(finding('unresolvable-scene-id', `scene.entities contains a non-string entry: ${JSON.stringify(entityId)}`,
@@ -165,7 +163,7 @@ export function diagnoseCampaign(id) {
     }
   }
 
-  // 3 — the same id in both player/ and actors/, which is a silent precedence trap.
+  // 3 — identical entity id in both player/ and actors/ directories; loadAnyEntity resolves player/ first, shadowing actors/.
   for (const [entityId, copies] of byId) {
     if (copies.length < 2) continue
     const homes = copies.map((c) => c.__home).sort()
@@ -181,7 +179,7 @@ export function diagnoseCampaign(id) {
       differing.length > 0 ? 'error' : 'warning'))
   }
 
-  // 4 — fabricated sheets (defaultEntity's hp 1, max_hp 1, ac 10 and nothing else).
+  // 4 — default entity sheets containing baseline stats without configured properties.
   for (const sheet of sheets) {
     if (sheet.kind === 'provisional') continue
     if (looksFabricated(sheet)) {
@@ -191,13 +189,11 @@ export function diagnoseCampaign(id) {
     }
   }
 
-  // 5 — transcripts the parser cannot read (old header shapes).
+  // 5 — transcripts with non-conforming header formats.
   //
-  // The test is *structural*, not "did a title come out": a modern transcript
-  // always has a `- Date:` line, and turn 7's title is genuinely `Untitled Scene`
-  // rather than a parse failure. Conflating the two would report a healthy
-  // transcript as broken, which is exactly the kind of false positive that makes
-  // a diagnostic get ignored.
+  // Transcripts must contain both a `# Turn N` header and a `- Date:` line.
+  // Valid transcripts may have `Untitled Scene` as the parsed title; checking
+  // explicit structural header markers avoids false-positive syntax reports.
   const numbers = turnNumbers(id)
   counts.transcripts = numbers.length
   const unparsed = []
@@ -235,10 +231,8 @@ export function diagnoseCampaign(id) {
           + 'A gap forces a full rebuild on the next commit, which silently discards anything non-derivable.',
           'Harmless if the index is rebuilt on the next turn; investigate if it persists.'))
       }
-      // Gaps in the surviving transcript sequence. Pruning turns is a normal
-      // authoring decision, so this is reported as information rather than a
-      // defect — but a *surprising* gap means transcripts were lost, and only
-      // the DM knows which it is.
+      // Discontinuities in sequential transcript turn numbers. Omitted turns may indicate
+      // manual pruning or missing transcript files; reported as diagnostic severity 'info'.
       const gaps = []
       for (let i = 1; i < numbers.length; i += 1) {
         if (numbers[i] !== numbers[i - 1] + 1) gaps.push([numbers[i - 1] + 1, numbers[i] - 1])
@@ -253,7 +247,7 @@ export function diagnoseCampaign(id) {
     }
   }
 
-  // 7 — a scene that was never updated while play continued.
+  // 7 — scene state turn number lagging behind the latest recorded transcript turn.
   if (sceneEntities.length > 0 && lastTurn > 0 && numbers.length > 0) {
     const newest = numbers[numbers.length - 1]
     if (newest - lastTurn > 1) {
@@ -354,8 +348,7 @@ function render(report) {
   if (report.counts.info > 0) parts.push(`${report.counts.info} note(s)`)
   const lines = [`doctor: ${report.counts.findings} finding(s) across ${report.counts.campaigns} campaign(s)`
     + `${parts.length > 0 ? ` — ${parts.join(', ')}` : ''}`, '']
-  // Errors first: a diagnostic nobody reads to the bottom is a diagnostic that
-  // did not run.
+  // Sort findings by severity order: errors, warnings, info.
   const rank = { error: 0, warning: 1, info: 2 }
   for (const f of [...report.findings].sort((a, b) => (rank[a.severity] ?? 3) - (rank[b.severity] ?? 3))) {
     lines.push(`[${f.severity}] ${f.campaign} · ${f.check}`)

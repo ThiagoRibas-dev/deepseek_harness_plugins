@@ -106,7 +106,9 @@ export function apply(ctx, config = {}) {
       const state = requireState(id)
       state.mode = mode
       saveState(id, state)
-      return { campaign: id, mode, constraints: MODE_CONSTRAINTS[mode] }
+      const hint = `Entered ${mode} mode. Follow ${mode} procedures and action economy as defined in`
+        + ` the \`dd35-${mode}-mode\` skill.`
+      return { campaign: id, mode, constraints: MODE_CONSTRAINTS[mode], hint }
     },
   }))
 
@@ -143,11 +145,13 @@ export function apply(ctx, config = {}) {
   ctx.tools.register(define({
     name: 'route_turn',
     description:
-      'Decide how to open this turn. Returns the phase to run: "session_zero" (no campaign exists in this '
-      + 'workspace yet), "choose_campaign" (campaigns exist but none is attached to this session — ask the '
-      + 'player whether to start a new one or continue an existing one), "fresh_session" (first message of a '
-      + 'session that has a campaign — recap prior events from the log first), or "gameplay" (the normal loop '
-      + 'in the returned mode). Call this on the first message of a session.',
+      'Determine the opening phase for the current turn. Evaluates session and campaign state to return one of '
+      + 'five operational phases: "setup" (campaign attached but no turns played yet; establish the starting '
+      + 'framework before opening a scene), "session_zero" (no campaign exists in this workspace yet), '
+      + '"choose_campaign" (campaigns exist but none attached to this session; prompt the player to select or '
+      + 'create one), "fresh_session" (first message of a session with existing history; recap prior events '
+      + 'first), or "gameplay" (active turn loop in the current mode). Call this on the first message of every '
+      + 'session.',
     parameters: {
       first_message: { type: 'boolean', description: 'True when this is the first message of a new session.' },
     },
@@ -162,7 +166,8 @@ export function apply(ctx, config = {}) {
             campaign: null,
             campaigns: [],
             reason: 'no campaign exists in this workspace yet',
-            hint: 'Load the `dd35-session-zero` skill and build a campaign with the player.',
+            hint: 'Build a campaign with the player: agree the setting and the party, then create it. The '
+              + '`dd35-session-zero` skill carries the interview and the build.',
           }
         }
         return {
@@ -170,9 +175,9 @@ export function apply(ctx, config = {}) {
           campaign: null,
           campaigns,
           reason: 'this session has no campaign attached',
-          hint: 'Load the `dd35-campaign-choice` skill: greet the player, then ask whether to start a new '
-            + 'campaign or continue one of these. A new one is `create_campaign`; continuing an existing one '
-            + 'is `set_active_campaign`.',
+          hint: 'Greet the player, then ask whether to start a new campaign or continue one of these. A new '
+            + 'one is `create_campaign`; continuing an existing one is `set_active_campaign`. The '
+            + '`dd35-campaign-choice` skill carries the full procedure.',
         }
       }
 
@@ -188,16 +193,34 @@ export function apply(ctx, config = {}) {
       }
 
       const state = loadState(resolved.id)
-      const phase = first_message ? 'fresh_session' : 'gameplay'
+      // A campaign that has never captured a turn is built but not yet played:
+      // no opening scene exists for the player to resume, and nothing in the log
+      // can be recapped. An `active` scene means the framing was already agreed,
+      // so it keeps the normal phases even if the first turn has not landed yet.
+      // `last_turn` is tested for absence, not against `null`: `loadState` is a
+      // raw JSON read, so a hand-authored `state.json` may omit the key.
+      const unplayed = !state?.last_turn
+      const framed = state?.scene?.status === 'active'
+      const phase = unplayed && !framed ? 'setup' : (first_message ? 'fresh_session' : 'gameplay')
+      const hints = {
+        setup: 'No turns have been played in this campaign yet. Settle the starting framework with the player '
+          + 'first (character level, campaign premise, starting location, and party or cohort roster). Do not '
+          + 'narrate the opening scene until the player confirms the setup. Once confirmed, initialize the '
+          + 'environment with update_scene and set_mode. The `dd35-session-zero` skill covers the interview, '
+          + 'the build, and the sheet fill-in.',
+        fresh_session: 'Recap prior events and unresolved threads from memory logs (list_memories, then '
+          + 'fetch_memories for the turns you need) before prompting for new action. The `dd35-fresh-session` '
+          + 'skill carries the full procedure.',
+        gameplay: 'Continue the active scene under the current play mode. The `dd35-gameplay-loop` skill '
+          + 'carries the loop; get_state resyncs you first.',
+      }
       return {
         phase,
         campaign: resolved.id,
         campaign_source: resolved.source,
         mode: state?.mode ?? 'exploration',
         scene: state?.scene ?? null,
-        hint: phase === 'fresh_session'
-          ? 'Load the `dd35-fresh-session` skill: recap prior events with list_memories, then fetch_memories for the turns you need.'
-          : 'Load the `dd35-gameplay-loop` skill: resync with get_state, then run the loop.',
+        hint: hints[phase],
       }
     },
   }))

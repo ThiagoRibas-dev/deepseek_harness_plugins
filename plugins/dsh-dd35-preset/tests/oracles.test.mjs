@@ -44,6 +44,7 @@ after(() => rmSync(rig, { recursive: true, force: true }))
 const oracles = await import(pathToFileURL(join(rig, 'oracles.js')).href)
 const tables = await import(pathToFileURL(join(rig, 'tables.js')).href)
 const dice = await import(pathToFileURL(join(rig, 'dice.js')).href)
+const core = await import(pathToFileURL(join(rig, 'oracle-core.js')).href)
 
 /** The registered tools, keyed by name. */
 function mount() {
@@ -360,4 +361,74 @@ test('dice.js still supplies real randomness for play', () => {
   const rolls = new Set()
   for (let i = 0; i < 200; i += 1) rolls.add(dice.rollD20())
   assert.ok(rolls.size > 5, 'a live d20 should not repeat a handful of values')
+})
+
+// ---- the tension tick (REC-1) -------------------------------------------
+//
+// The tick is the reason three tables were added to `tables.json`: `ambient`,
+// `tactical` and `world` each draw a whole row when their tier fires. These
+// cases pin the arithmetic, because a decay bug is invisible in play for dozens
+// of turns and only shows up as "the ambushes never stop".
+
+const tierNames = () => Object.keys(core.TENSION_TIERS)
+
+test('every tension tier draws from a populated vocabulary', () => {
+  for (const [tier, spec] of Object.entries(core.TENSION_TIERS)) {
+    assert.equal(tables.table(spec.table).length, 10, `${tier} -> ${spec.table}`)
+  }
+})
+
+test('a first tick compares against each tier start DC without decaying it', () => {
+  const { tiers } = core.evaluateTensionTick({ last_turn: { number: 1 } }, 1)
+  for (const [tier, spec] of Object.entries(core.TENSION_TIERS)) {
+    assert.equal(tiers[tier].dc_at_roll, spec.dc, tier)
+    assert.equal(tiers[tier].die, spec.die, tier)
+  }
+})
+
+test('a quiet tier decays by its printed amount; a fired tier resets to its start', () => {
+  const carried = { tiers: { ambient: { dc: 60 }, tactical: { dc: 60 }, world: { dc: 60 } } }
+  const { tiers, event } = core.evaluateTensionTick({ tension: carried, last_turn: { number: 9 } }, 9)
+  for (const [tier, spec] of Object.entries(core.TENSION_TIERS)) {
+    const entry = tiers[tier]
+    assert.equal(entry.dc_at_roll, Math.max(core.TENSION_FLOOR, 60 - spec.decay), tier)
+    assert.equal(entry.triggered, entry.roll >= entry.dc_at_roll, tier)
+    assert.equal(entry.dc, entry.triggered ? spec.dc : entry.dc_at_roll, tier)
+  }
+  assert.equal(event === null, tierNames().every((tier) => !tiers[tier].triggered))
+})
+
+test('the DC stops at the floor instead of decaying to nothing', () => {
+  const carried = { tiers: { ambient: { dc: 6 }, tactical: { dc: 6 }, world: { dc: 6 } } }
+  const { tiers } = core.evaluateTensionTick({ tension: carried }, 4)
+  for (const tier of tierNames()) assert.equal(tiers[tier].dc_at_roll, core.TENSION_FLOOR, tier)
+})
+
+test('the same state and seed produce the same tick', () => {
+  const state = { tension: { tiers: { ambient: { dc: 77 } } }, last_turn: { number: 12 } }
+  assert.deepEqual(core.evaluateTensionTick(state, 12), core.evaluateTensionTick(state, 12))
+})
+
+test('the larger tier is the one delivered when several fire together', () => {
+  // At the floor every die has ~96% to fire, so a seed that fires two is easy to
+  // find and the assertion never rests on one lucky roll.
+  const carried = { tiers: { ambient: { dc: 5 }, tactical: { dc: 5 }, world: { dc: 5 } } }
+  for (let seed = 1; seed <= 200; seed += 1) {
+    const { tiers, event } = core.evaluateTensionTick({ tension: carried }, seed)
+    const fired = core.TENSION_PRIORITY.filter((tier) => tiers[tier].triggered)
+    if (fired.length < 2) continue
+    assert.equal(event.tier, fired[0], 'priority is world > tactical > ambient')
+    return
+  }
+  assert.fail('no seed in 1..200 fired two tiers at the floor')
+})
+
+test('a delivered event carries its tier tag and a usable line', () => {
+  const carried = { tiers: { ambient: { dc: 5 }, tactical: { dc: 5 }, world: { dc: 5 } } }
+  const { event } = core.evaluateTensionTick({ tension: carried }, 7)
+  assert.ok(event !== null, 'three tiers at the floor should fire')
+  assert.equal(event.tag, core.TENSION_TIERS[event.tier].tag)
+  assert.ok(event.text.length > 0)
+  assert.ok(event.line.startsWith(event.tag), event.line)
+  assert.ok(event.line.length <= 420, `line is ${event.line.length} chars`)
 })

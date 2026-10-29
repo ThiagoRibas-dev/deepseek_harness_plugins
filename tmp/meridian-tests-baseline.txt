@@ -1,0 +1,51 @@
+
+client module contract
+  ok   registers the module under the package name
+  ok   declares the client services the card reads
+  ok   registers into the keyed provider-card slot under its settings namespace
+  ok   registers the quota strip into the composer dock
+  ok   registers into no other slot
+
+card render
+  ok   renders the route state and every editable field
+  ok   reports an inactive route and a missing key instead of claiming success
+  ok   marks overridden fields and says when the namespace is not writable
+  ok   renders before the namespace has resolved
+  ok   renders no model chips until discovery has run
+
+10 passed, 0 failed
+
+serialize-compaction: ok
+
+serialize-notices: ok
+
+spent-batch durability
+  ok   a blocked generation is CONTENT_FILTERED, not a retryable transport fault
+  ok   a cut stream on an answered continuation is MERIDIAN_BATCH_SPENT
+  ok   a cut stream that never reached Meridian stays a retryable TRANSPORT
+  ok   an ordinary turn keeps its retryable TRANSPORT classification
+  ok   a 502 carrying the policy text is CONTENT_FILTERED, not a retryable SERVER
+  ok   a non-JSON 502 body carrying the policy text is still CONTENT_FILTERED
+  ok   the policy text is found past the message-length cap
+  ok   a 502 on a continuation is MERIDIAN_BATCH_SPENT, not a retryable SERVER
+  ok   the same 502 on an ordinary turn keeps its retryable classification
+  ok   a dropped agent connection gets its own retryable code
+  FAIL the connector stands in for a reply Meridian consumed the batch for
+       The input did not match the regular expression /batch of 1 tool result /. Input:
+
+"[Meridian Antigravity] This turn's tool batch was consumed by a generation the backend blocked and never completed, so no reply exists for it. This notice stands in for that missing reply so the conversation can continue. Nothing was lost and no tool ran twice — re-issue your last instruction."
+
+  ok   the repair is off when repairSpentBatch is false
+  FAIL a refused continuation is repaired, and the notice quotes Meridian
+       Meridian refused this tool continuation because it no longer matches the turn it already delivered: the delivered history, tool batch, model or execution controls changed between the tool call and its result. A harness that rewrites or compacts the transcript while a tool batch is pending is the usual cause, and re-sending the same request cannot repair it. This is a deterministic transcript conflict, not an uncertain tool outcome. (Meridian Antigravity: Antigravity tool continuation changed its delivered history or tool batch)
+  ok   a conflict with no continuation is still reported as an error
+  ok   an aborted continuation is healed by the repair on the next request
+  ok   an idle stream stall on a continuation is MERIDIAN_BATCH_SPENT
+  ok   a stall before Meridian answers keeps the retryable TIMEOUT
+  ok   a blocked continuation is repaired instead of stranding the batch
+  ok   a reply the filter cut late is kept, with the notice after it
+  ok   a blocked ordinary turn still reports CONTENT_FILTERED
+  ok   a blocked continuation is not repaired when the repair is off
+  ok   capture is off by default and writes the dispatched body when on
+
+20 passed, 2 failed

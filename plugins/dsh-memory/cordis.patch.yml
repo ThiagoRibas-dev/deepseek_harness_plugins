@@ -1,0 +1,27 @@
+# Profile-global memory. Mounted at the Host level rather than inside an agent
+# preset: memory belongs to the profile, not to any one agent, and a preset that
+# carried it would give every other preset nothing to remember with.
+#
+# Paths are computed in code, not with `!!js dshHomePath(...)`. The TTS bundle
+# learned that the hard way: its `!!js` expression did not survive the profile
+# override, so the plugin fell back to a directory under the checkout. Here the
+# database defaults to `$DSH_HOME/storages/memory.db`, the model cache to
+# `$DSH_HOME/models/embeddinggemma-2-ONNX`, and the ingestion folder to
+# `$DSH_HOME/memory-inbox`, all without a config value.
+- insert:
+    - id: memory
+      name: 'file:///export/DownloadsSSD/SHARED/harnesses/dsh/plugins/dsh-memory/plugin.js'
+      config:
+        namespace: global
+        # The HTTP surface. A plugin route inherits none of the harness's own
+        # authentication and the web server is reachable on the network, so the
+        # route refuses to serve until a token is set here. `apiEnabled: true`
+        # with an empty token answers 503 with that instruction rather than
+        # serving memory — and a 346 MB download trigger — to anyone who can
+        # reach the port. Set `apiToken` in the profile, as the TTS row does.
+        apiEnabled: true
+        apiToken: ''
+        # Reads every completed turn into the `transcripts` collection, which is
+        # meant to accumulate for the life of a session. Turn it off to keep the
+        # corpus to documents only.
+        captureTranscripts: true

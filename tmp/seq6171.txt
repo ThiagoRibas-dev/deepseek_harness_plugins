@@ -1,0 +1,62 @@
+This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.
+
+<compacted-summary>## Primary Request and Intent
+- Address user directive: "Nice. I like these.\nOne thing we should make a not of revising later is how campaign information is saved on different files. There's a bit of a redundancy when it comes to some things I think."
+- Document identified campaign storage redundancies and candidate architectural revisions in `docs/dd35/handoff.md` and `scratchpad.md`.
+- Apply approved non-functional comment revisions across `plugins/dsh-dd35-preset/doctor.js`, `plugins/dsh-dd35-preset/memory.js`, `plugins/dsh-dd35-preset/context-index.js`, and `plugins/dsh-dd35-preset/state-store.js`.
+- Preserve test suite stability across all 231 unit tests (`node --test plugins/dsh-dd35-preset/tests/*.test.mjs`).
+
+## Key Technical Concepts
+- DeepSeek Harness (`dsh`) / Cordis plugin architecture for D&D 3.5 preset (`plugins/dsh-dd35-preset`).
+- 5 Core DM Roles model (World Builder, Simulation Engine, Storyteller, Arbiter, Rules Teacher) with interwoven game mechanics.
+- Core Invariants: Subtractive zero-inference execution (pure deterministic Node.js / SQLite; no live turn LLM or embeddings), mid-turn state immutability (`agent/turn-stopping` commit boundary), wire payload capping via `capToolOutput(payload, 16384)`, strict prompt budgeting (~1,570 tokens resting prefix).
+- Campaign storage redundancy points:
+  - Entity presence: duplicated across `state.json` (`scene.entities`), markdown transcript headers (`- Entities:` in `events/transcripts/NNNN_turn.md`), `events/memory_index.json`, and co-occurrence indexing in `context-index.js`.
+  - Scene location: duplicated across `state.json` (`scene.location`), markdown transcript headers (`- Location:`), and `events/memory_index.json`.
+  - Entity directory partitioning: identical schemas split across `player/` and `actors/`, requiring precedence rules in `loadAnyEntity`, shadowing diagnostics in `doctor.js`, and deduplication in `context-index.js`.
+  - Condition state partitioning: split between entity sheet `conditions` arrays and `state.json` combat counters (`combat.conditions` / `combat.combatants`).
+- Candidate architectural revisions:
+  - Ephemeral on-demand indexing for `events/memory_index.json`.
+  - Unified `entities/` directory with `type: 'pc' | 'npc'` discriminator.
+  - Authoritative scene presence confined strictly to `state.json`, treating transcript headers as read-only historical logs.
+
+## Files and Code
+- `docs/dd35/handoff.md`: documentation target for "Campaign Storage and File Redundancy Revision" under Open Architectural Items.
+- `scratchpad.md`: roadmap, session notes, and task checklist tracking.
+- `plugins/dsh-dd35-preset/state-store.js`: storage layout definition (`state-store.js:4–15`); pending comment updates.
+- `plugins/dsh-dd35-preset/memory.js`: transcript header generation (`memory.js:192–198`) and header parser for `events/memory_index.json` (`memory.js:6–12`); pending comment updates.
+- `plugins/dsh-dd35-preset/context-index.js`: disk transcript parsing for presence / co-occurrence (`context-index.js:83–105`) and entity deduplication (`context-index.js:63–65`); pending comment updates.
+- `plugins/dsh-dd35-preset/doctor.js`: diagnostics for entity directory shadowing (`doctor.js:167–168`) and orphaned condition states (`doctor.js:266`); pending comment updates.
+- `plugins/dsh-dd35-preset/cordis.patch.yml`: static d20 tables pruned, technical comment revisions applied and verified; requires harness restart to activate.
+- `plugins/dsh-dd35-preset/scene-state.js`: technical comment revisions applied and verified.
+- `plugins/dsh-dd35-preset/tests/*.test.mjs`: unit test suite (231 passing tests, 0 failures, 0 skipped).
+- `/root/.dsh/sessions/--export-DownloadsSSD-SHARED-harnesses-dsh--/session-ccf1f521-d3a1-4f91-9202-8fd230808db1/session.v4.jsonl.zstd`: compressed session journal.
+
+## Errors and Fixes
+- `SyntaxError: unexpected character after line continuation character`: failed inline python one-liner when decompressing session logs due to backslash-escaped quotes inside format expression `f"=== SEQ {seq} {obj.get(\"type\")} ==="`. Fix: avoid backslash escapes inside format expression brackets by using single quotes, separate variable assignments, or `str.format()`.
+
+## Pending Jobs
+- Append the "Campaign Storage and File Redundancy Revision" section into `docs/dd35/handoff.md` under Open Architectural Items.
+- Cross-reference the redundancy entry and checklist in `scratchpad.md`.
+- Apply pre-approved non-functional comment revisions across `plugins/dsh-dd35-preset/doctor.js`, `plugins/dsh-dd35-preset/memory.js`, `plugins/dsh-dd35-preset/context-index.js`, and `plugins/dsh-dd35-preset/state-store.js`.
+- Execute `node --test plugins/dsh-dd35-preset/tests/*.test.mjs` to ensure all 231 tests pass cleanly after edits.
+
+## Current Work
+- Inspected `scratchpad.md` roadmap sections, 5 Core DM Roles definitions, and session history notes.
+- Ready to append the campaign storage redundancy item into `docs/dd35/handoff.md`.
+
+## Next Step
+- Append the "Campaign Storage and File Redundancy Revision" entry into `docs/dd35/handoff.md` under Open Architectural Items.
+
+## Critical Context
+- Target content for `docs/dd35/handoff.md` under Open Architectural Items:
+  - *Objective*: Consolidate overlapping campaign state stored across `state.json`, transcript headers, `events/memory_index.json`, and entity sheets.
+  - *Identified Redundancies*:
+    1. Entity Presence: `state.json` (`scene.entities`), markdown headers (`- Entities:`), `events/memory_index.json`, and memory co-occurrence index.
+    2. Scene Location: `state.json` (`scene.location`), transcript headers (`- Location:`), and `events/memory_index.json`.
+    3. Entity Directory Partitioning: Identical schemas split between `player/` and `actors/`, requiring precedence resolution and shadowing checks.
+    4. Condition State Partitioning: Split between sheet `conditions` arrays and `state.json` combat counters (`combat.conditions` / `combat.combatants`).
+  - *Candidate Revisions*: On-demand ephemeral indexing for `events/memory_index.json`, unified `entities/` folder with `type: 'pc' | 'npc'`, and `state.json` as sole authoritative scene presence source.
+- Strict constraint: Do NOT modify code in `plugins/dsh-dd35-preset/` without explicit approval; comment updates across `doctor.js`, `memory.js`, `context-index.js`, and `state-store.js` are pre-approved and strictly non-functional.
+- All 231 unit tests across 12 suites must remain passing after every edit.
+</compacted-summary>

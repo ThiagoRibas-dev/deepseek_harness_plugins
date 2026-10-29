@@ -1,0 +1,69 @@
+This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.
+
+<compacted-summary>## Primary Request and Intent
+- Document campaign storage redundancies and architectural revisions per user directive: "Nice. I like these.\nOne thing we should make a not of revising later is how campaign information is saved on different files. There's a bit of a redundancy when it comes to some things I think."
+- Record campaign storage redundancies and prospective revisions in `docs/dd35/handoff.md` under Open Architectural Items and update `scratchpad.md`.
+- Replace metaphorical and colloquial comments with literal technical descriptions per user directive: "Can you also rewrite the comments to be more descriptive? What does \"so it is paid for once and cached thereafter\"? Why the metaphor?" and "Also find other places where that kind of language, not necessarily that specific metaphor, also exist please."
+- Follow user selection: "Let's go with option B for now." (clean up metaphorical comments in audited preset modules before proceeding to Phase 1 roadmap).
+- Apply pre-approved, strictly non-functional comment revisions across `plugins/dsh-dd35-preset/doctor.js`, `plugins/dsh-dd35-preset/memory.js`, `plugins/dsh-dd35-preset/context-index.js`, and `plugins/dsh-dd35-preset/state-store.js`.
+- Maintain test stability across all 231 unit tests (`node --test plugins/dsh-dd35-preset/tests/*.test.mjs`).
+
+## Key Technical Concepts
+- DeepSeek Harness (`dsh`) / Cordis plugin system for D&D 3.5 preset (`plugins/dsh-dd35-preset`).
+- Documentation standards in `AGENTS.md`: literal technical prose, no idioms/personification, explicit invariants, data flows, and lifecycle boundaries.
+- LLM KV prefix caching: root-position turn-1 immutable prompt caching to preserve attention states and eliminate redundant computation.
+- Context buffer truncation ordering: volatile snapshot records positioned after static party records so token/byte limits truncate transient data first.
+- Subtractive zero-inference architecture: deterministic Node.js and SQLite execution for indexing and state manipulation without secondary LLM invocations.
+- Mid-turn state immutability: state capture at `agent/turn-stopping` commit boundary decoupled from final `turn/end` (where `reason.kind === "completed"`).
+- Wire payload capping via `capToolOutput(payload, 16384)` to avoid transcript bloat and upstream timeouts.
+- Storage redundancy points:
+  - Entity presence: duplicated across `state.json` (`scene.entities`), transcript markdown headers (`- Entities:` in `events/transcripts/NNNN_turn.md`), `events/memory_index.json`, and memory co-occurrence index in `context-index.js`.
+  - Scene location: duplicated across `state.json` (`scene.location`), transcript headers (`- Location:`), and `events/memory_index.json`.
+  - Dual directory entity partitioning: identical schemas split between `player/` and `actors/`, requiring precedence resolution in `loadAnyEntity`, shadowing diagnostics in `doctor.js:167-168`, and deduplication in `context-index.js:63-65`.
+  - Condition state partitioning: split between entity sheet `conditions` arrays and `state.json` combat counters (`combat.conditions` / `combat.combatants`), checked in `doctor.js:266`.
+- Candidate architectural revisions:
+  - Ephemeral on-demand indexing for `events/memory_index.json` instead of persisting derived data alongside primary sources.
+  - Consolidating `player/` and `actors/` into a single `entities/` directory with a `type: 'pc' | 'npc'` discriminator.
+  - Establishing `state.json` as the single authoritative source of active presence while treating transcript headers strictly as historical logs.
+
+## Files and Code
+- `docs/dd35/handoff.md`: target documentation file for "Campaign Storage and File Redundancy Revision" under Open Architectural Items.
+- `scratchpad.md`: session tracking, roadmap items, and checklist for redundancy documentation and comment cleanup.
+- `plugins/dsh-dd35-preset/cordis.patch.yml`: Five Core DM Roles added; static reference tables pruned; technical comment updates applied; requires harness restart to take effect.
+- `plugins/dsh-dd35-preset/scene-state.js`: technical comment cleanups applied and verified.
+- `plugins/dsh-dd35-preset/doctor.js`: diagnostic scanner module; target lines for colloquialism removal: 6–18, 33, 60–61, 86–94, 137, 167–168, 183–184, 193–200, 237–241, 255, 357–358.
+- `plugins/dsh-dd35-preset/memory.js`: transcript header generation (`lines 192-198`), header parser for `events/memory_index.json` (`lines 6-12`), and turn boundary commit comments (`lines 14-18, 46`).
+- `plugins/dsh-dd35-preset/context-index.js`: transcript parsing for presence/co-occurrence (`lines 83-105`) and entity deduplication (`lines 63-65`); candidate signal and turn cost comment cleanups.
+- `plugins/dsh-dd35-preset/state-store.js`: storage layout definition (`lines 4-15`), projection consistency comments (`lines 479-484`), unassigned session handling (`lines 520-521`), and campaign directory path resolution comments.
+- `plugins/dsh-dd35-preset/tests/*.test.mjs`: unit test suite (231 passing tests, 0 failures across 12 suites).
+- `/root/.dsh/sessions/--export-DownloadsSSD-SHARED-harnesses-dsh--/session-ccf1f521-d3a1-4f91-9202-8fd230808db1/session.v4.jsonl.zstd`: compressed session journal containing historical proposal data at seq 5446 and seq 5815.
+
+## Errors and Fixes
+- `SyntaxError: unexpected character after line continuation character`: Python one-liner failed decompressing session logs due to backslash-escaped quotes in f-string expression `f"=== SEQ {seq} {obj.get(\"type\")} ==="`. Resolved by using single quotes, intermediate variables, or `.format()`.
+- Ephemeral `/tmp` file disappearance: writing logs to `/tmp/seq5446.md` in one subshell failed to read in subsequent commands due to independent execution contexts. Resolved by streaming and consuming data in a single process invocation.
+- Double-damage vulnerability on `roll_attack(apply: true)`: resolved in prefix directives by allowing either `roll_attack (with apply: true)` or `apply_damage`, preventing double deduction.
+
+## Pending Jobs
+- Append "Campaign Storage and File Redundancy Revision" section into `docs/dd35/handoff.md` under Open Architectural Items.
+- Update checklist and tracking in `scratchpad.md`.
+- Apply pre-approved non-functional comment revisions across `plugins/dsh-dd35-preset/doctor.js`, `plugins/dsh-dd35-preset/memory.js`, `plugins/dsh-dd35-preset/context-index.js`, and `plugins/dsh-dd35-preset/state-store.js`.
+- Run `node --test plugins/dsh-dd35-preset/tests/*.test.mjs` to verify all 231 tests pass cleanly.
+- Phase 1 Roadmap (subsequent): tension loop tables in `tables.json`, `evaluateTensionTick` in `oracle-core.js`, and `capToolOutput(16384)` in `memory.js` and `context-index.js`.
+- Phase 2 Roadmap (subsequent): signature migration.
+
+## Current Work
+- Preparing edit to append the "Campaign Storage and File Redundancy Revision" subsection under Open Architectural Items in `docs/dd35/handoff.md`.
+
+## Next Step
+- Append the "Campaign Storage and File Redundancy Revision" section to `docs/dd35/handoff.md` under Open Architectural Items.
+
+## Critical Context
+- Content to add to `docs/dd35/handoff.md`:
+  - Objective: consolidate overlapping state across `state.json`, transcript headers, `events/memory_index.json`, and entity sheets.
+  - Identified Redundancies: Entity Presence (`state.json` vs transcript headers vs `memory_index.json`), Scene Location (`state.json` vs transcript headers vs index), Entity Directory Partitioning (`player/` vs `actors/`), and Condition State Partitioning (entity sheets vs `state.json` combat counters).
+  - Candidate Revisions: evaluate deriving `events/memory_index.json` on-demand or as ephemeral artifact; unify `player/` and `actors/` into `entities/` with `type: 'pc' | 'npc'`; establish `state.json` as single authoritative path for active scene presence.
+- User constraint: "do NOT edit anything in `plugins/dsh-dd35-preset/` without explicit approval." Comment replacements for `doctor.js`, `memory.js`, `context-index.js`, and `state-store.js` have prior approval but must remain strictly non-functional.
+- All 231 unit tests across 12 test suites must remain green.
+- Cordis patch edits in `plugins/dsh-dd35-preset/cordis.patch.yml` take effect only after a harness restart.
+- Working directory: `/export/DownloadsSSD/SHARED/harnesses/dsh`. Harness checkout: `/export/DownloadsSSD/AI/TEXT/deepseek-harness/`.
+</compacted-summary>

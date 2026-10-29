@@ -1,0 +1,10 @@
+{
+  "type": "request/context",
+  "seq": 14,
+  "time": 1792505156312,
+  "data": {
+    "provider": "meridian-antigravity",
+    "model": "gemini-4-argon-high",
+    "contextWindow": 200000
+  }
+}

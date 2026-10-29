@@ -1,0 +1,121 @@
+
+client module contract
+  ok   registers the module under the package name
+  ok   declares the client services the card reads
+  ok   registers into the keyed provider-card slot under its settings namespace
+  ok   registers the quota strip into the composer dock
+  ok   registers into no other slot
+
+card render
+  ok   renders the route state and every editable field
+  ok   reports an inactive route and a missing key instead of claiming success
+  ok   marks overridden fields and says when the namespace is not writable
+  ok   renders before the namespace has resolved
+  ok   renders no model chips until discovery has run
+
+10 passed, 0 failed
+
+serialize-compaction: ok
+
+serialize-notices: ok
+
+spent-batch durability
+  ok   a blocked generation is CONTENT_FILTERED, not a retryable transport fault
+  ok   a cut stream on an answered continuation is MERIDIAN_BATCH_SPENT
+  ok   a cut stream that never reached Meridian stays a retryable TRANSPORT
+  ok   an ordinary turn keeps its retryable TRANSPORT classification
+  ok   a 502 carrying the policy text is CONTENT_FILTERED, not a retryable SERVER
+  ok   a non-JSON 502 body carrying the policy text is still CONTENT_FILTERED
+  ok   the policy text is found past the message-length cap
+  ok   a 502 on a continuation is MERIDIAN_BATCH_SPENT, not a retryable SERVER
+  ok   the same 502 on an ordinary turn keeps its retryable classification
+  ok   a dropped agent connection gets its own retryable code
+  ok   a batch Meridian already consumed is stood in for after the retry
+  ok   the repair is off when repairSpentBatch is false
+  ok   a refused continuation is retried once with the recovery turn appended
+  ok   a continuation still refused after the retry is reported as an error
+  ok   a conflict with no continuation is still reported as an error
+  ok   an aborted continuation is healed by the repair on the next request
+  ok   an idle stream stall on a continuation is MERIDIAN_BATCH_SPENT
+  ok   a stall before Meridian answers keeps the retryable TIMEOUT
+  ok   a blocked continuation is repaired instead of stranding the batch
+  ok   a reply the filter cut late is kept, with the notice after it
+  ok   a blocked ordinary turn still reports CONTENT_FILTERED
+  ok   a blocked continuation is not repaired when the repair is off
+  ok   capture is off by default and writes the dispatched body when on
+
+23 passed, 0 failed
+
+
+health gate
+  ok   accepts the pinned backend and CLI version
+  ok   refuses a different backend
+  ok   refuses a different agy version
+  ok   refuses a process that is not Meridian
+
+catalogue
+  ok   an unadvertised slug is a hard error with no substitution
+  ok   advertises the account catalogue with per-family modalities
+
+request shape
+  ok   never sends temperature, top_p, top_k, thinking or output controls
+  ok   the slug is the effort interface and a mismatch is refused
+  ok   sends a matching effort only when the deployment asks for it
+  ok   honors options.system and the latest in-history system snapshot
+  ok   tool results are arrays, lead their turn, and drop harness-only markers
+  ok   session-title helper turns advertise no tools
+  ok   images are inlined as base64 with the declared media type
+  ok   an oversized request asks for image offload instead of truncating
+
+streaming and tool holding
+  ok   a complete turn emits text then finish
+  ok   tool calls are withheld until message_stop
+  ok   a held tool block is never emitted before message_stop
+  ok   a thinking block never becomes a reasoning channel
+  ok   a stream cut after the first tool block executes nothing and recovers
+  ok   a stream cut mid-text resumes only the missing suffix
+  ok   recovery refuses to splice a divergent answer
+  ok   an empty terminal stop is a retryable EMPTY_RESPONSE
+
+identity
+  ok   identical bytes reuse one id; a new turn mints another
+  ok   a failed turn keeps its identity so the retry is a replay, not a new generation
+  ok   identity is content-addressed and the stream control is excluded
+  ok   the identity fits the documented alphabet and length bound
+  ok   two sessions sending identical bytes never share one identity
+  ok   a session id separates the wire identity of two identical requests
+  ok   the session id is carried as meridian_session_key
+  ok   every request carries harness attribution
+
+error policy
+  ok   400 maps to INVALID_REQUEST
+  ok   401 maps to AUTH
+  ok   409 maps to MERIDIAN_UNCERTAIN_OUTCOME
+  ok   422 maps to MERIDIAN_STOP_IN_STRUCTURED_OUTPUT
+  ok   429 maps to RATE_LIMIT
+  ok   502 maps to SERVER
+  ok   503 maps to SERVER
+  ok   504 maps to TIMEOUT
+  ok   a changed tool continuation is a deterministic conflict, not an uncertain outcome
+  ok   a reclaimed pending process is reported as replayable
+  ok   an expired tool deadline is reported as replayable
+  ok   a 409 with no readable provider message stays the conservative uncertain outcome
+  ok   the default policy never retries a transcript or identity failure
+  ok   an in-stream quota error is QUOTA, not a retryable transport fault
+  ok   an in-stream fault that is not about quota stays a retryable transport error
+  ok   a non-JSON gateway body still classifies by HTTP status
+
+injected notice filtering
+  ok   a model-switch notice after the player message never reaches the provider
+  ok   an approval-policy notice after the player message is dropped
+  ok   a notice that is the whole turn is kept so the request still ends on a user turn
+  ok   no runtime-context snapshot is sent, the newest included
+  ok   notices that carry something to act on are kept
+  ok   the runtime-context exclusion is not configurable away
+  ok   the filter removes only the configured kinds and keeps the rest in order
+
+base URL handling and manifest
+  ok   normalizes a pasted /v1 suffix and rejects credentials in the URL
+  ok   exports the plugin surface the loader expects
+
+55 passed, 0 failed

@@ -251,3 +251,104 @@ export function drawCoherent(key) {
 export function consultOracle({ seed, vectors, tables, uprightOnly = false } = {}) {
   return consult({ vectors, tables, uprightOnly, random: seededRandom(seed ?? 0) })
 }
+
+// ---- decaying-DC tension (REC-1) -----------------------------------------
+
+/**
+ * Where a tier stops decaying.
+ *
+ * Without a floor, a long quiet stretch drives the DC below any possible roll
+ * and pins the tier at "always fires". The floor keeps the last few points as a
+ * genuine die result instead of a certainty.
+ */
+export const TENSION_FLOOR = 5
+
+/**
+ * Three tiers, each a die against a DC that decays every turn until it fires.
+ *
+ * | tier | die | start DC | per-turn | reset gap |
+ * | :--- | ---: | ---: | ---: | ---: |
+ * | `ambient` | d100 | 95 | -3 | ~5 turns |
+ * | `tactical` | d200 | 198 | -2 | ~12 turns |
+ * | `world` | d500 | 498 | -2 | ~22 turns |
+ *
+ * The gaps are the point. A flat per-turn chance would make a surprise as likely
+ * on the first turn of a scene as on the tenth; decay means quiet play makes an
+ * intrusion steadily more likely, and a firing resets that tier so the pressure
+ * starts over. The tags are the ones `persona.prefix` already instructs the DM
+ * to honour.
+ */
+export const TENSION_TIERS = Object.freeze({
+  ambient: Object.freeze({
+    die: 100, dc: 95, decay: 3, tag: '[SURPRISE EVENT]', table: 'ambient_surprise.csv',
+  }),
+  tactical: Object.freeze({
+    die: 200, dc: 198, decay: 2, tag: '[ENCOUNTER EVENT]', table: 'tactical_encounter.csv',
+  }),
+  world: Object.freeze({
+    die: 500, dc: 498, decay: 2, tag: '[WORLD_EVENT]', table: 'world_event.csv',
+  }),
+})
+
+/** Rarest first: when two tiers fire on one tick, the larger event is the one delivered. */
+export const TENSION_PRIORITY = Object.freeze(['world', 'tactical', 'ambient'])
+
+/** A cell holding a die result rather than content. */
+const TENSION_RESULT_COLUMN = /^(Roll|d\d+|Range)$/
+
+/** Per-cell and whole-line budgets, so one verbose row cannot bloat a snapshot. */
+const TENSION_CELL_MAX = 160
+const TENSION_TEXT_MAX = 400
+
+/**
+ * Advance every tier by one turn and return the new DCs plus at most one event.
+ *
+ * Deterministic in `seed` alone, given the carried DCs: two calls with the same
+ * state and seed produce the same rolls, which is what makes this testable and
+ * reproducible without persisting the die results.
+ *
+ * @param state - the campaign's `state.json` object; reads `tension.tiers`.
+ * @param seed - PRNG seed; defaults to the last captured turn number.
+ * @returns `{ tiers, event }` — `event` is null on a quiet turn.
+ */
+export function evaluateTensionTick(state, seed = state?.last_turn?.number ?? 0) {
+  const random = seededRandom(seed)
+  const carried = state?.tension?.tiers ?? {}
+  const tiers = {}
+
+  for (const [tier, spec] of Object.entries(TENSION_TIERS)) {
+    const previous = carried[tier]?.dc
+    const dc = Number.isFinite(previous) ? Math.max(TENSION_FLOOR, previous - spec.decay) : spec.dc
+    const roll = 1 + Math.floor(random() * spec.die)
+    const triggered = roll >= dc
+    // A firing resets the tier to its starting DC, so the next intrusion of this
+    // size is just as unlikely as the first one was.
+    tiers[tier] = { dc: triggered ? spec.dc : dc, die: spec.die, roll, dc_at_roll: dc, triggered }
+  }
+
+  const fired = TENSION_PRIORITY.find((tier) => tiers[tier].triggered) ?? null
+  return { tiers, event: fired === null ? null : composeTensionEvent(fired, tiers[fired], random) }
+}
+
+/**
+ * One event line from the tier's vocabulary table.
+ *
+ * The whole row is read together, like the other coherent-row tables: the
+ * stimulus, its detail and the complication describe a single situation, and
+ * drawing them independently produces three unrelated facts.
+ */
+function composeTensionEvent(tier, entry, random) {
+  const spec = TENSION_TIERS[tier]
+  const drawn = rowAt(spec.table, random)
+  const cells = drawn === null
+    ? []
+    : Object.entries(drawn)
+      .filter(([column]) => !TENSION_RESULT_COLUMN.test(column))
+      .map(([, value]) => String(value ?? '').trim())
+      .filter((value) => value !== '')
+      .map((value) => (value.length > TENSION_CELL_MAX ? `${value.slice(0, TENSION_CELL_MAX - 1)}…` : value))
+
+  const whole = cells.join('; ')
+  const text = whole.length > TENSION_TEXT_MAX ? `${whole.slice(0, TENSION_TEXT_MAX - 1)}…` : whole
+  return { tier, tag: spec.tag, die: entry.die, roll: entry.roll, dc: entry.dc_at_roll, text, line: `${spec.tag} ${text}`.trim() }
+}

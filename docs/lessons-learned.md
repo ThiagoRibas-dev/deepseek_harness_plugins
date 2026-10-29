@@ -341,7 +341,8 @@ neutral: readers take the first item as the likely one. `tests/failure.test.js` 
 
 **Log the thing that turns a symptom into an answer.** "The prefix moved" cost an afternoon of
 archaeology; "message 61 (user) changed, 7786 -> 9114 chars" would have ended it in one line. The
-connector already kept request capture — the exact body of each dispatch, off by default — so the diff
+connector already kept request capture — the exact body of each dispatch, off by default, on in this
+deployment since 2026-10-11 (§3.2) — so the diff
 was a small module (`lib/diagnostics.js`) over data already being produced. Check what evidence the
 system already keeps before adding instrumentation.
 
@@ -368,9 +369,19 @@ Useful event types: `turn/start`, `step/start`, `assistant/message` (with `sourc
 Pairing is by `callId`. A `step/start` with no matching `assistant/message` means a step produced an attempt
 and no reply — **that is what a failed generation looks like.**
 
+The session store records what the *harness* dispatched, not what the provider received. When the question is
+"what did the model actually see", the request captures are the record: `captureRequestBodies` in the Meridian
+connector writes one file per dispatch to `/root/.dsh/meridian-capture`. `tmp/meridian/wire-report.mjs
+<session-id-suffix>` summarises one session from them — conversation key, notice exposure, continuation, and
+whether a body is the recovery retry — and it is the fastest way to tell a connector fault from a context one
+(§8).
+
 ### 2.3 The provider's own state is richer than ours
 
-For Meridian/Antigravity: `/root/.gemini/antigravity-cli/`
+For Meridian/Antigravity: `/root/.gemini/antigravity-cli/`. Services, directories, environment and the
+prompt byte limits for this deployment are catalogued in
+`docs/plugins/dsh-meridian-antigravity/environment.md` — Meridian runs as a **user** unit
+(`journalctl --user -u meridian-agy`), which is why a system-scope `systemctl list-units` shows nothing.
 
 - `brain/<uuid>/.system_generated/logs/transcript.jsonl` — what was sent
 - `brain/<uuid>/.system_generated/steps/N/output.txt` — **the step's error, verbatim**
@@ -416,10 +427,17 @@ These are four *different* failures that all look like "the DM stopped replying"
 **Symptom** The turn errors with `MERIDIAN_BATCH_SPENT`; no reply is written.
 
 **Cause** The backend accepted the tool results, then the generation died (observed cause:
-`UNAVAILABLE (code 503): No capacity available`). The batch is spent; re-sending would be refused.
+`UNAVAILABLE (code 503): No capacity available`, and more often `Antigravity turn timed out` after a long
+tool loop). The batch is spent; re-sending the same continuation would be refused.
 
-**Rule** This is recoverable — the connector's `repairSpentBatch` commits a notice so the conversation can
-continue, and the instruction must be **re-issued as a new message**. Do not fork.
+**Rule** With `repairSpentBatch` on (the default) the connector retries the turn **once as an ordinary
+call** — appending a placeholder assistant turn and a user instruction to continue from the tool results
+above, which leaves the request ending on a user message — and if that also fails it commits a notice so
+the conversation can continue. The retry is what makes the failure recoverable; the notice alone only keeps
+the transcript valid. **Before 2026-10-20 there was no retry on this path**, because the code that
+classifies a cut stream as spent runs after the repair block and threw directly, so a live turn failed with
+no reply and no repair (`session-dc7217e4`, turn 2). Do not fork. If a retried turn still ends on a notice,
+the instruction must be re-issued as a new message.
 
 ### 3.2 `MERIDIAN_CONTINUATION_CONFLICT` — the transcript-moved shape
 
@@ -456,15 +474,95 @@ separate in that session: the prune; and the `dd35` runtime-context block, which
 step 2 inside the batch window (the two blocks differ exactly in the `Micro-state`/`Pending action` lines).
 
 **Rule** Keeping the strip off on a Meridian-routed preset is the safe default, and it is what the connector's
-own *Known limitations* recommends. It is precaution, not a demonstrated single cause: **no one can name the
-cause of a given conflict from the session log**, because the connector's notice is generic and
-`captureRequestBodies` is off by default. Do not write a lesson that asserts a cause; that is how this section
-was wrong the first time.
+own *Known limitations* recommends. It is precaution, not a demonstrated single cause: the connector's notice
+is generic, and the session log cannot show a retried turn at all (see below). Do not write a lesson that
+asserts a cause; that is how this section was wrong the first time. Where a conflict *has* been attributed
+from captures, the cause was ours, not the pruner's: §3.3 records a notice filter that ran on the turn opener
+and not on its continuation, which is a prefix change by construction.
 
-**To identify a cause:** enable `captureRequestBodies` (`lib/config.js`), reproduce once, and diff the
-dispatched body against the previous one. That is the only artefact that shows which node moved.
+**Capture is on in this deployment, and has been since 2026-10-11.** `captureRequestBodies: true` with
+`captureDir: /root/.dsh/meridian-capture` sits in **both** `plugins/dsh-meridian-antigravity/cordis.patch.yml:42`
+and `/root/.dsh/profiles/web/cordis.patch.yml:134`. It has to be repeated there: the profile's
+`llm-meridian-antigravity` row **replaces** the bundle's config rather than merging into it, so a flag left only
+in the bundle patch does not take effect in that profile. The schema default is still `false`
+(`plugins/dsh-meridian-antigravity/lib/config.js:193`); the bundle is what turns it on. Captures are complete
+unredacted transcripts, pruned to the newest **50**, written `0644` into a `0755` directory — treat that
+directory as session data.
 
-### 3.3 The silent-failure trap
+**To identify a cause:** diff the capture of the refused dispatch against the previous one for the same
+session. `plugins/dsh-meridian-antigravity/lib/diagnostics.js` does that and reports
+`message N (role) changed, A -> B`. The 50-file cap bounds how far back this works: `session-dc7217e4`'s first
+turn — 44 steps plus the compaction call — had already rotated out by the time it was worth reading.
+
+**Measured once, 2026-10-20** (`session-dc7217e4`): the message that moved was the **last user turn**. A
+`MERIDIAN_BATCH_SPENT` left an unconsumed `tool_result` at the tail of the surface; `serialize.js` merges
+consecutive user-role turns and hoists tool results, so the next user message was merged into that same wire
+turn — message 58 grew **4,263 -> 31,946 bytes** — and the continuation re-delivered a tool result Meridian had
+already consumed. That is one cause, not the cause.
+
+**A retried turn is invisible in the session store.** On a refused continuation the connector appends
+`assistant: "Recovering from transcript conflict."` and a user instruction, then resends as an ordinary call
+(`plugins/dsh-meridian-antigravity/lib/transport.js`). Both messages exist in the capture and in **no**
+`session.v4.jsonl.zstd` event: searching the store for those strings finds them only inside `tool/result`
+payloads, because the model later read the source that contains them. For a retried turn the store does not
+record what the model saw.
+
+**And the instruction it appends decides which request gets answered.** The repair was originally a fixed
+sentence, "continue your work using the tool results above", which is only correct when the tool results
+belong to the request being answered. When a **new player turn** arrived while a spent batch was still at the
+tail, the serializer merged that turn into the tool result, so the fixed sentence pointed at the previous
+request: turns 3 and 5 of `session-dc7217e4` both retried under it and both re-emitted the answer to turn 1.
+The connector now re-issues the player's own message when one sits **after** the last tool result, and keeps
+the fixed sentence otherwise. Two conditions make that predicate non-obvious: `role: 'user'` does not identify
+the player (runtime context, workspace instructions, the skill catalog and a compaction checkpoint are all
+user-role), and the player's turn is not necessarily last, because notices are appended after it. Position
+relative to the last tool result is the only reliable signal.
+
+### 3.3 A notice filtered on one path is a prefix change on the other
+
+**Symptom** Every tool step of a turn is refused as a continuation conflict, each one repaired with an extra
+dispatch, and the answer comes back about the *previous* subject. Measured on `session-857354e7`
+(`Review Unstaged Git Files`), turns 8 and 9: five consecutive refusals, each followed by the recovery retry,
+and both turns re-emitted an earlier audit instead of doing the documentation work that was asked for twice.
+
+**Cause** `lib/serialize.js` runs `filterNoticeMessages` **only when `continuation === undefined`**:
+
+```js
+const { messages: history, dropped } = continuation === undefined
+  ? filterNoticeMessages(options.messages, { ignoredKinds: connection.ignoredNoticeKinds, … })
+  : { messages: options.messages, dropped: [] }
+```
+
+`model-selection` and `user-approval` are in `ignoredNoticeKinds` by default, so those notices are dropped
+from turn openers and from the recovery retry — both non-continuations — and **sent** on every continuation,
+which is forwarded verbatim. Meridian therefore accepts a history without the notice and is then asked to
+continue a history that contains it.
+
+The evidence is a single block. Message 8 of the refused body and of the accepted body it replaced differ in
+exactly one text block:
+
+```
+accepted (73 msgs): [tool_result][tool_result][tool_result] "Keep going please."
+refused  (75 msgs): [tool_result][tool_result][tool_result] "Keep going please."
+                    + "[model changed: … the session continues with gemini-3.8-flash-high]"
+```
+
+Presence is not the problem: an earlier run in the same session carried the notice on every continuation with
+no retry, so a prefix that contains it from the start is stable. **The alternation is the bug.** Once the
+retry body (which drops the notice) is the last thing Meridian accepted, every following continuation re-adds
+it and is refused, so the cycle repeats for the rest of the turn.
+
+**Rule** A history-rewriting filter must apply **identically to every request**. "Apply it only where the turn
+starts" sounds like it protects the pinned prefix, and it does the opposite: it makes the opener and its
+continuation disagree, which is the one thing the contract will not tolerate. Decide drop-or-keep from the
+content, never from the request's position.
+
+**Why it cost three answers** Each refusal spends a dispatch and replaces the operative instruction with the
+recovery line ("continue your work using the tool results above"). By the time the model answers, the user's
+request is several messages back and the checkpoint at message 0 — an answer-shaped summary — is what "your
+work" means. That is how two explicit doc instructions turned into the same audit twice.
+
+### 3.4 The silent-failure trap
 
 **A refused turn is recorded as `reason.kind = "completed"`** with a notice as the assistant message. So the
 session looks fine, the turn advances, and the user just sees no response — which is why prompts get re-sent
@@ -594,5 +692,108 @@ Before writing a theory, in order:
    A healthy backend route proves only that the host half loaded.
 6. **Before asserting a cause, state what would falsify it** — then test that. Three theories died in one
    session to a single falsifying check each.
-7. **When the harness surprises you, write it here before moving on.** A fact re-derived costs the same hour
+7. **Model answers an older question, or re-offers a choice you already made?** Check the newest
+   `compaction/summary` time against the session's last turns before reading the model's behaviour at all:
+   a stale checkpoint is §8, and `/compact` then resend is the remedy. Forking does **not** help — it copies
+   the checkpoint.
+8. **Model "ignoring" an instruction that it can otherwise follow?** Check the checkpoint first (§8). Only if
+   it is current, read the workspace's `AGENTS.md` for a plan/approval gate — §9.
+9. **When the harness surprises you, write it here before moving on.** A fact re-derived costs the same hour
    twice; the sections above exist so it costs it once.
+
+---
+
+## 8. A stale compaction checkpoint freezes the session
+
+**Symptom** The model answers a question you did not ask: it restates an earlier answer and re-offers a
+choice you have already made. In `session-d772c4cf` (*Review Unstaged Git Files (1)*) three successive
+versions of one request were met with re-audits, "what were we doing?" was answered with the state as of 19
+hours earlier, and "did you receive my message?" produced a 7,008-character audit instead of a yes.
+
+**The model received everything.** Measured on the dispatch for that last question (15:35:18, 93 messages):
+the checkpoint at `[0]`, the same request **three times**, both intervening questions, and the new question
+last. Nothing was lost, merged away or reordered. "It ignored my message" is the wrong diagnosis; it had the
+message and answered a different state.
+
+**Cause — the checkpoint is the operative state, and it goes stale.**
+
+- It lands as a **user-role** message at position 0, and its preamble tells the model to *"treat the captured
+  context as established background and build on it without restating it."*
+- `compaction-basic` rewrites it **only when compaction runs**, which is triggered by context pressure, not by
+  age. The last summary before this incident was written at **20:12:03**, and it was still the checkpoint
+  **19 hours and 6 turns later**, while the session grew from 73 to 95 messages with only prunes.
+- That stale summary carried `## Current Work: audit complete… awaiting user instruction on which track to
+  execute` and `## Next Step: Await user selection of priority track: P1, P2, P3`. A gate written as an
+  instruction, in a user-role message, outlives the moment that motivated it: every later "let's start with
+  Roadmap Hygiene" is a request the state does not acknowledge, so the model re-offers the choice.
+
+**Shape is neither sufficient nor necessary.** One session, two checkpoints, measured:
+
+| Checkpoint | Template | Age | Result |
+| --- | --- | --- | --- |
+| 20:12:03, 7,067 chars | **8/8** sections | 19 h | froze — three request versions absorbed, all re-audited |
+| 16:05:54, 7,625 chars (after `/compact`) | **0/8** sections | seconds | recovered — 68 tool calls and **7 edits** to `docs/MILESTONES.md` |
+
+The conforming one failed and the non-conforming one worked, so "the summary follows the template" is not
+evidence that the checkpoint is safe. Fix the shape anyway — 5 of that session's 8 summaries missed the
+template — but do not expect it to fix a stale session.
+
+**Rule**
+
+- **A checkpoint must describe, never instruct.** `## Next Step: await user selection` is an instruction that
+  outlives its trigger. Write state as *"as of turn N, X was pending"*, and say that later messages supersede
+  it and that a choice already made must not be re-offered.
+- **Refresh on staleness, not only on pressure.** A host plugin can compare the checkpoint against the
+  session and re-summarise past a threshold. It must hook `agent/status` on `idle`, not `agent/pre-step`:
+  `compactNow` runs through `runMaintenance`, which throws when the agent is active. Design, costs and
+  guards: `docs/plugins/compaction-freshness.md`.
+- **Framing can be fixed without the harness.** The checkpoint's preamble is ordinary text in our wire
+  derivation, so the connector can replace it deterministically on every request — prefix-safe because the
+  transform is a pure function of the surface message. Same document.
+
+**Remedy available today:** `/compact` (`@deepseek-ai/dsh-command-compact`, mounted in the `standard`, `ptc`
+and `cordis` presets). Run it in the session and resend the message. It worked first try here. **Do not fork**:
+a fork copies the stale checkpoint, which is why this looked unfixable twice.
+
+The recovery was not just research: the same turn removed the Windows `file:///d:` prefixes, normalised
+`###` headings to `##`, and dropped `(Currently Active)` / `(Active)` suffixes — the roadmap hygiene that had
+been requested three times, executed without any approval message in between.
+
+**Confound, stated rather than hidden:** that compaction also shadowed 109 events / 61,038 tokens, most of
+them the model's own repeated audits. A shorter context with less of that tail may account for part of the
+recovery; one event cannot separate freshness from length.
+
+---
+
+## 9. A workspace rule can outrank a conversational instruction
+
+**Symptom** The model will not execute a task it clearly understands, and keeps producing a plan or an audit
+instead.
+
+**The workspace's own `AGENTS.md` can require a gate.** In
+`/export/DownloadsSSD/Projects/Game Dev/rogue-like/AGENTS.md`:
+
+| Line | Rule |
+| --- | --- |
+| 5 | *"**Wait for authorization.** Never move on to executing a plan or writing code before the User gives explicit approval."* |
+| 7 | *"**NEVER assume. ASK.**"* |
+| 83 | research step: *"**STOP HERE** and present the research document… Do not proceed to Step 4 until the User explicitly confirms…"* |
+| 87 | *"**STOP HERE and wait for the User's explicit approval of the Implementation Plan before writing or modifying any actual codebase files.**"* |
+
+Those rules explain the **shape** of the replies in this session — a `research_notes.md` artifact (turn 8),
+"once you choose, we will produce a detailed plan with exact diffs before writing any code" — instead of edits.
+
+**They do not explain the loop, and this entry was wrong about that for one round.** The behaviour carried on
+across three identical requests and cleared the moment the checkpoint was refreshed (§8) — with **no approval
+message in between**. The turn after `/compact` made seven edits to `docs/MILESTONES.md`. So the gate was not
+what blocked execution; a stale "await user selection" was.
+
+**Rule** Check §8 first: a stale checkpoint is the cheaper explanation and the cheaper fix. Only if the
+checkpoint is current and the model still will not act should the workspace instructions be read as the cause —
+and then the remedy is to phrase approval in the terms the rules accept (*"plan approved — update
+`docs/MILESTONES.md` now; skip the plan artifact"*) or to add a doc-only exemption to that `AGENTS.md`. A
+doc-only change has no reason to sit behind a code-approval gate.
+
+**Evidence that the model was never broadly stuck** (worth keeping, because it rules out the model and the
+transport): it wrote `research_notes.md` when asked to work (turn 8), answered `test` when told "reply with
+test please" (turn 11), and gave a correct recap when asked what it had been doing (turn 12).

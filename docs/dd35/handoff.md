@@ -1281,7 +1281,7 @@ session that ran with the strip enabled.
 | :--- | :--- |
 | Turn 1 | 11 steps. Setup reads: `route_turn`, `skill`, `get_state`, `list_memories`×3, `read`×5, `dd35_context_index`, `get_entity`, `fetch_memories`×3. Narrated **2,801 chars**. `turn/end reason=completed`. |
 | Turn 2 step 1 | The pass fired at the pre-step — **correct timing**, the first completed-turn boundary. It appended 2 `compaction/prune` + 2 replacement results (seqs 86–89) and then `step/start`. The model made 2 calls: `update_scene`, `ask_oracle`; both results returned. |
-| Turn 2 step 2 | The assistant message is the **Meridian refusal notice**, 481 chars, not narration. `turn/end reason=completed` — the silent-failure trap (§3.3). The turn produced nothing. |
+| Turn 2 step 2 | The assistant message is the **Meridian refusal notice**, 481 chars, not narration. `turn/end reason=completed` — the silent-failure trap (§3.4). The turn produced nothing. |
 
 So the answer to "within expectations" is **no, on both counts**.
 
@@ -1377,9 +1377,11 @@ the spec's rev 3 banner.
 
 ## Open
 
-1. **Settle the cause with the dispatched body.** `captureRequestBodies` is off; turn it on for one
-   reproduction and diff the body against the previous one. Meridian names three possible causes and
-   the connector cannot tell them apart; only the bodies can.
+1. **Settle the cause with the dispatched body.** Capture is already on — `captureRequestBodies: true` in
+   `plugins/dsh-meridian-antigravity/cordis.patch.yml` and again in the web profile — so this needs no setup.
+   The first measured diff is in `lessons-learned.md` §3.2: `session-dc7217e4` moved its **last user turn**
+   (4,263 -> 31,946 bytes) when a new user message merged into a `tool_result` left over from a spent batch.
+   Meridian names three possible causes and the connector cannot tell them apart; only the bodies can.
 2. **If the runtime-context block is the cause**, the fix is in the preset, not the connector: a state
    change mid-turn must not re-append a runtime-context user message between a tool call and its
    result. Check `dsh-dd35-preset`'s scene-state injection ordering.
@@ -1445,8 +1447,8 @@ block is current. A mid-turn reminder is not worth a mid-batch transcript append
   `dsh-meridian-antigravity` are), so this needs a **harness restart** to take effect. A new session
   after that is the first live test.
 - **Still unproven:** that the mid-batch snapshot was what Meridian refused. This change removes the
-  mid-batch append but does not prove the link. Settle it with `captureRequestBodies` on a
-  reproduction — the freeze makes that reproduction cleaner, since the runtime-context churn will no
+  mid-batch append but does not prove the link. Settle it by diffing captures on a reproduction — capture
+  is already on, and the freeze makes that reproduction cleaner, since the runtime-context churn will no
   longer be one of the moving parts.
 - **Check the same pattern elsewhere:** any other `context()` contributor that reads a
   tool-writable file needs the same treatment. `dd35:dm-notes` and `dd35:scene-state` were the two.
@@ -1610,8 +1612,9 @@ two or more runtime-context messages (8 of 34 against 0 of 76).
   failure it describes.
 - **`lib/capture.js`** — exports `CAPTURE_NAME` so the two modules share one pattern.
 - **`cordis.patch.yml`** — `captureRequestBodies: true`, `captureDir: /root/.dsh/meridian-capture`,
-  `captureMaxFiles: 50`. **A capture is a complete, unredacted transcript, campaign prose included** —
-  treat the directory as session data and turn it off when the diagnosis is done.
+  `captureMaxFiles: 50`. **Still on as of 2026-10-20, deliberately** — the decision is to leave it on rather
+  than disable it between diagnoses. **A capture is a complete, unredacted transcript, campaign prose
+  included** — treat the directory as session data; it is `0644` files in a `0755` directory.
 
 ## The notice now reads
 
@@ -1856,6 +1859,19 @@ prefix *without* the superseded snapshot, and the continuation put it back. `tes
 asserted exactly that broken behaviour ("a continuation must not rewrite the delivered prefix") while
 causing the rewrite.
 
+**The same shape recurred for named notices and was fixed on 2026-10-20.** The snapshot half was closed by
+dropping every `runtime-context` message on the wire, but `ignoredKinds` stayed gated on
+`continuation === undefined`, so a `model-selection` notice was dropped from the turn opener and sent on
+its continuations. Measured on `session-857354e7`: five consecutive refusals, one extra dispatch each.
+`lessons-learned.md` §3.3 has the entry; the filter now runs on every request.
+
+**A third variant is not about the wire at all, and it will look like this one.** A compaction checkpoint that
+is stale — not misshapen — freezes a session: its `## Next Step` says "await user selection", the model treats
+that as the current state, and every later request is answered from it. Measured on `session-d772c4cf`: a
+checkpoint 19 hours and 6 turns old, while a checkpoint written minutes earlier (which failed the template)
+let the same model proceed. `/compact` then resend fixes it; **forking does not**, it copies the checkpoint.
+`lessons-learned.md` §8. Any preset that compacts heavily — `dd35` included — can hit this.
+
 ## The fix
 
 `buildMessages` now skips `runtime-context` messages, so no snapshot reaches the wire — current or
@@ -1938,5 +1954,43 @@ show zero `Current runtime context.` occurrences, where they previously showed t
    - Character name generator verified: all 14 cultures (`dwarf`, `elf`, `halfling`, `human_fantasy`, `old_english`, `medieval_english`, `celtic`, `nordic`, `sanskrit`, `tolkien`, `le_guin`, `donaldson`, `howard`, `martin`), gender selection with Martin female fallback, Howard subcultures, surname toggle, deterministic seed repeatability, and count clamping [1, 10].
    - Place name generator verified: 6 categories (`settlement`, `realm`, `ancestral`, `terrain`, `theme`, `landmark`), 13 terrains, 14 themes, 4 realm types, 4 ancestral cultures, deterministic seed repeatability, and count clamping [1, 10].
 
+## Open Architectural Items
+
+### Campaign Storage and File Redundancy Revision
+
+- **Objective**: Consolidate overlapping campaign state stored across `state.json`, transcript headers, `events/memory_index.json`, and entity sheets.
+- **Identified Redundancies**:
+  1. *Entity Presence and Roster Tracking*: Recorded in `state.json` under `scene.entities`, copied to transcript markdown headers (`- Entities:` in `events/transcripts/NNNN_turn.md` via [memory.js:192–198](plugins/dsh-dd35-preset/memory.js#L192-L198)), indexed in `events/memory_index.json` ([memory.js:6–12](plugins/dsh-dd35-preset/memory.js#L6-L12)), and parsed from disk for co-occurrence matrices ([context-index.js:83–105](plugins/dsh-dd35-preset/context-index.js#L83-L105)). Tracking across four separate locations risks synchronization drift if turns fail or files are manually edited.
+  2. *Scene Location and Environment*: Current location stored in `state.json` (`scene.location`), duplicated in each transcript's `- Location:` header line, indexed in `events/memory_index.json`, and parsed by `context-index.js` for scene transitions.
+  3. *Dual Directory Entity Storage (`player/` vs. `actors/`)*: Identical JSON schemas across `player/` and `actors/` directories require precedence resolution in `loadAnyEntity` ([state-store.js:304–313](plugins/dsh-dd35-preset/state-store.js#L304-L313)), shadowing detection in [doctor.js:167–168](plugins/dsh-dd35-preset/doctor.js#L167-L168), and deduplication logic in [context-index.js:63–65](plugins/dsh-dd35-preset/context-index.js#L63-L65).
+  4. *Condition and Status Tracking*: Split between sheet-level persistent `conditions` arrays and `state.json` combat round counters (`combat.conditions` / `combat.combatants`), requiring diagnostic checks in [doctor.js:266](plugins/dsh-dd35-preset/doctor.js#L266) to flag orphaned states.
+- **Candidate Revisions**:
+  - *On-Demand Derived Indexing*: Derive `events/memory_index.json` on-demand or treat it as an ephemeral cache rather than committing derived data alongside primary sources.
+  - *Unified Entity Directory*: Consolidate `player/` and `actors/` into a unified `entities/` directory with a `type: 'pc' | 'npc' | 'companion'` discriminator property, eliminating directory precedence and shadowing checks.
+  - *Authoritative Scene Presence*: Establish `state.json` as the sole write target for active scene presence, treating transcript headers strictly as immutable historical logs rather than inputs for presence calculation.
+  - *Condition Ownership*: Keep transient round-based combat conditions in `state.json` and persistent afflictions on entity sheets with clear reconciliation rules.
+
+### Session-Start Routing Contract (REC-12)
+
+- **Observed failure**: a campaign opened its first scene, at level 15, immediately after the character files were loaded. `route_turn` returned `gameplay`, because a campaign was attached and the message was not the session's first. The tool has no phase for "campaign built, no turn played".
+- **Second failure, same root**: the phase table and the instruction to call `route_turn` at all lived in the campaign workspace's `.agents/AGENTS.md`, not in the preset. The preset's own hints already named workspace skills ([state.js:166–215](plugins/dsh-dd35-preset/state.js#L166-L215)), so the contract was split across two repositories.
+- **Planned shape**: a `setup` phase on `route_turn` keyed to `!state.last_turn` (absent or null, since `loadState` does no defaulting) with a scene status other than `active`; the call requirement in `persona.prefix`; per-phase meaning in the tool description and hints; a mode-skill hint from `set_mode`; and the phase and mode tables removed from the workspace `AGENTS.md`.
+- **Same edit adds two prompt directives**: a naming rule requiring `generate_place_name` / `generate_character_name` instead of invented placeholders, and a diegetic boundary rule limiting in-character documents to what the sender knows or claims, with secrets kept in `dm_notes.md`.
+- **Status**: shipped. [`state.js`](plugins/dsh-dd35-preset/state.js) carries the `setup` phase, the five-phase description, and the `set_mode` hint; [`cordis.patch.yml`](plugins/dsh-dd35-preset/cordis.patch.yml) carries `Turn Routing`, `Naming Discipline`, and `Diegetic Information Boundaries`. Prefix grew 6,294 → 7,664 bytes (~1,574 → ~1,916 tokens). 235 preset tests pass, including four new `session-binding` cases. Wording is recorded in [preset-evolution-report.md §REC-12](docs/dd35/preset-evolution-report.md).
+- **Gating rule**: `phase = unplayed && !framed ? 'setup' : (first_message ? 'fresh_session' : 'gameplay')`. `framed` is `scene.status === 'active'`, which keeps a campaign that agreed its framing from dropping back into setup before its first captured turn.
+- **Restart required**: `cordis.patch.yml` changes do not mount until the harness restarts.
+- **Outstanding**: the phase and mode tables are still in the campaign workspace's `.agents/AGENTS.md`; removing them needs elevated permissions.
 
 
+
+
+### Decaying-DC Tension Engine (REC-1)
+
+- **What it fixes**: nothing in the preset ever injected a complication. The persona prefix told the DM to honour `[SURPRISE EVENT]`, `[ENCOUNTER EVENT]` and `[WORLD_EVENT]`, and no code emitted them — a prompt instruction naming a signal that could not arrive.
+- **Shape**: three tiers, each a die against a DC that decays every turn until it fires and then resets. `ambient` d100 vs 95 (−3/turn, ~5.9-turn mean gap), `tactical` d200 vs 198 (−2/turn, ~11), `world` d500 vs 498 (−2/turn, ~20). Floor of 5 keeps the last few points a real roll. When two tiers fire on one tick, `TENSION_PRIORITY` delivers the larger.
+- **Where it runs**: [`tension.js`](plugins/dsh-dd35-preset/tension.js) rolls at `agent/turn-stopping`, before the turn commits, and writes `state.tension = { tiers, pending }`. The snapshot is rendered by a frozen runtime context for exactly one turn: it appears when `state.last_turn.number === pending.after_turn + 1`, so it cannot replay.
+- **Why the turn boundary, not the assembly path**: the DCs decay by turns-since-last-fire, which is history. A pure renderer would have to decay from the turn number alone and would reset the pressure on every restart. One turn of latency buys durability; the event still lands in the next scene, which is what rolling at the end of a turn means at a table.
+- **Vocabulary**: [`tables.json`](plugins/dsh-dd35-preset/tables.json) gained `ambient_surprise`, `tactical_encounter` and `world_event`, 10 rows × 4 content columns each, drawn whole like the other coherent-row generator tables.
+- **Tests**: 256 preset tests pass. Tick arithmetic in [`oracles.test.mjs`](plugins/dsh-dd35-preset/tests/oracles.test.mjs), persistence and delivery in [`tension.test.mjs`](plugins/dsh-dd35-preset/tests/tension.test.mjs).
+- **Restart required**: the `dd35-tension` row in `cordis.patch.yml` does not mount until the harness restarts.
+- **Next**: `capToolOutput(payload, 16384)`. [`fetch_memories`](plugins/dsh-dd35-preset/memory.js#L359-L398) returns full turn text for every requested id plus both neighbours with no ceiling.

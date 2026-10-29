@@ -8,12 +8,13 @@
  * Measured over 88 real sessions and 4,072 inference steps, **half of all tool
  * traffic was filesystem work** — `read` alone was called 1,113 times, more than
  * any preset tool, and its targets were the campaign's own history
- * (`player/backstory.md` 99, early transcripts 76/59/50). The DM was re-reading
- * the story it had already played because nothing handed it back. This module is
- * the passive half of the fix: what the DM should never have had to ask for.
+ * (`player/backstory.md` 99, early transcripts 76/59/50). Previous sessions re-read
+ * earlier campaign transcripts and player backstory via filesystem calls because
+ * that state was not automatically present in prompt context. This module injects
+ * active scene and cast state automatically.
  *
- * Design constraints, each of which is load-bearing
- * -------------------------------------------------
+ * Core architectural constraints
+ * ------------------------------
  * 1. **Identity, not a second source of truth.** Entity rows are rendered by
  *    `briefEntity` from `state-store.js` — the same function `get_state` uses —
  *    so the injected block and the tool result cannot disagree about what an
@@ -24,14 +25,15 @@
  *    delivers all of them, so a line reading `as of turn N` is the only way the
  *    model can tell which snapshot is current (spec §4.1.3).
  * 3. **It must stay small.** `joinContextSections` renders *every* context into
- *    one message, so a change to any of them re-emits the whole block. The
- *    volatile tail goes last, and the byte cap eats it first.
+ *    one message, so a change to any of them re-emits the whole block. Volatile
+ *    records are positioned at the end so byte-limit truncation discards them
+ *    before static campaign data.
  * 4. **It never throws.** This runs on the request's error path during prompt
  *    assembly; an absent campaign, a missing `state.json`, or an unreadable file
- *    must contribute `''`. A throw here kills the session.
+ *    must contribute `''`. An unhandled exception aborts prompt assembly.
  * 5. **It does not restate the recent turns.** The session already carries them
- *    verbatim. Re-injecting them would be pure duplication and would make the
- *    block's bytes change every turn for no information gain.
+ *    verbatim. Re-injecting them would duplicate data and alter the prompt prefix
+ *    every turn without adding information.
  */
 import { join } from 'node:path'
 import { campaignTurnKey, createTurnFrozenContext } from './context-freeze.js'
@@ -53,17 +55,15 @@ const DEFAULTS = {
   /** Total byte budget for the runtime snapshot contribution, notices included. */
   sceneStateMaxBytes: 6144,
   /**
-   * Budget for the player-prose *section*. Generous on purpose.
+   * Byte budget for the player character prose prompt section.
    *
    * Measured on the live campaign, the three player files total 23.3 KB
-   * (`backstory.md` 4.5 KB, `character.md` 9.9 KB, `companions.md` 8.9 KB) — about
-   * 6.7 k tokens. That is a real cost, but it is paid **once** in the cached
-   * system prefix rather than on every step, and it replaces `backstory.md` being
-   * the single most-read file in the campaign (99 reads). A cap that truncates
-   * mid-file is worse than no cap at all: the model cannot tell a complete file
-   * from a cut-off one, so it reads as authoritative and is not. Set this below
-   * the corpus size and expect truncation notices; set it above and pay for prose
-   * the DM may never need this session.
+   * (`backstory.md` 4.5 KB, `character.md` 9.9 KB, `companions.md` 8.9 KB) — approximately
+   * 6,700 tokens. Positioning these files in an immutable system-prompt section allows
+   * KV-caching providers to compute attention tensors once and reuse them across turns,
+   * avoiding both repetitive filesystem reads (99 reads of `backstory.md` historically)
+   * and resending the content on each turn. The budget accommodates complete files to
+   * prevent partial truncation without clear indicators.
    */
   playerFilesMaxBytes: 24576,
   /** Per-file budget inside that section. */
@@ -71,8 +71,8 @@ const DEFAULTS = {
   /** After the DM persona (100) and the campaign persona (110), before policy. */
   playerSectionOrder: 120,
   /**
-   * Render after `dd35:dm-notes` (200) so the volatile state sits at the very end
-   * of the joined snapshot and a truncation eats it first.
+   * Render after `dd35:dm-notes` (200) so volatile scene state is positioned at
+   * the end of the joined snapshot and truncated before notes when over budget.
    */
   sceneStateOrder: 300,
   /** Files from `player/` to include, in order. `.md` only; sheets render elsewhere. */
@@ -246,16 +246,17 @@ function knownCastBlock(root, id, state, opts) {
 }
 
 /**
- * The player's own authored prose, as a **system-prompt section** rather than
- * part of the snapshot.
+ * The player's authored character prose, contributed as an immutable
+ * **system-prompt section** rather than part of the runtime snapshot.
  *
- * `backstory.md` was the single most-read file in the campaign (99 reads), which
- * is what a file that belongs in context looks like when it is kept on disk
- * instead. It is structural, not volatile: it changes maybe once a campaign, so
- * as a section it is paid for once and cached thereafter, whereas the same bytes
- * in the runtime snapshot would be re-sent on every step. The cap is generous
- * because a half-truncated backstory is worse than none — it reads as complete
- * and is not.
+ * Incorporating player backstory files into a static system-prompt section
+ * prevents repetitive disk reads (which accounted for 99 reads in benchmarked campaigns).
+ * Because this content changes infrequently across a campaign, placing it in an
+ * immutable system-prompt section allows LLM providers with KV prefix caching to
+ * compute attention states once on turn 1 and reuse the cache across subsequent turns.
+ * In contrast, placing these files in the runtime snapshot would resend the full byte
+ * payload on every step. The byte limit is set high enough to preserve whole files,
+ * as partial truncation causes missing character details without explicit indicators.
  */
 function playerFilesSection(assemble, opts) {
   try {
@@ -306,15 +307,13 @@ function previousSceneTitle(root, id, currentTurn) {
 /**
  * A consultation, rolled once per scene.
  *
- * **Seeded from the turn number**, because this renders per *step*: a
- * `Math.random()` draw would hand the DM different vectors on every step of the
- * same scene, which is incoherent and would churn the snapshot on each one. The
- * seed also means the roll is reproducible from `(turn)` alone and nothing has to
- * be persisted.
+ * **Seeded from the turn number**, because this renders per *step*: an unseeded
+ * random draw would generate different vectors on every step of the same scene,
+ * creating snapshot churn across steps. Seeding from turn number ensures the roll
+ * is deterministic and reproducible from `(turn)` alone without secondary storage.
  *
- * The DM can always call `consult_oracle` itself for a genuinely random draw; this
- * exists so that inspiration arrives whether or not the model thought to ask —
- * a model that has already decided what happens next will not ask.
+ * The DM can also invoke `consult_oracle` directly for an unseeded draw; this
+ * automatic consultation provides thematic prompts at scene transitions.
  */
 export function oracleBlock(root, id, state, opts) {
   if (opts.oracleOnSceneChange !== true) return []
@@ -379,9 +378,8 @@ export function sceneStateContext(assemble, options) {
       '',
     ]
 
-    // The oracle gets **its own budget**, applied before the block is merged into
-    // the body: sharing the outer cap would let a large scene state squeeze the
-    // vectors out, which is exactly the moment a new scene most needs them.
+    // The oracle receives a dedicated byte budget applied before merging into the
+    // body so that large scene state text cannot displace oracle vectors.
     const oracle = oracleBlock(root, id, state, opts)
     if (oracle.length > 0) lines.push(cap(oracle.join('\n'), opts.oracleMaxBytes, 'oracle'), '')
 
@@ -392,7 +390,8 @@ export function sceneStateContext(assemble, options) {
       + 'Re-read with `get_state` after any tool that changes a sheet mid-turn — `apply_damage`, '
       + '`roll_attack(apply: true)`, `next_turn` — because this block is rebuilt per step, not per tool call._'
 
-    // Volatile state first, so a truncation eats the least load-bearing content.
+    // Volatile records are placed after party data so byte-limit truncation
+    // drops transient cast details before core party state.
     // The closing note sits with the state it describes rather than at the very
     // end, so a capped block does not lose it. The player's prose is a separate
     // prompt *section* (see `playerFilesText`), not part of this snapshot.
@@ -406,8 +405,8 @@ export function sceneStateContext(assemble, options) {
     return cap(body, opts.sceneStateMaxBytes, 'scene state')
   } catch {
     // Prompt assembly runs on the request's error path. An absent campaign,
-    // corrupt JSON, or an unreadable directory contributes nothing; it must
-    // never take the session down.
+    // corrupt JSON, or an unreadable directory contributes nothing; unhandled
+    // exceptions must not abort the session.
     return ''
   }
 }

@@ -1,0 +1,72 @@
+This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.
+
+<compacted-summary>
+The approved comment revisions for [doctor.js](plugins/dsh-dd35-preset/doctor.js), [memory.js](plugins/dsh-dd35-preset/memory.js), [context-index.js](plugins/dsh-dd35-preset/context-index.js), and [state-store.js](plugins/dsh-dd35-preset/state-store.js) are prepared. Comment cleanups across [cordis.patch.yml](plugins/dsh-dd35-preset/cordis.patch.yml) and [scene-state.js](plugins/dsh-dd35-preset/scene-state.js) remain in place, with the test suite passing all 231 tests across 12 suites.
+
+The analysis of campaign file storage redundancies is detailed below, followed by the proposed documentation entry for [handoff.md](docs/dd35/handoff.md) and the immediate execution plan.
+
+---
+
+### Campaign Storage Redundancies
+
+The storage layout defined in [state-store.js:4–15](plugins/dsh-dd35-preset/state-store.js#L4-L15) distributes campaign facts across multiple files with four distinct overlap points:
+
+1. **Entity Presence and Roster Tracking**
+   - Active entity IDs are written to `state.json` under `scene.entities`.
+   - [memory.js:192–198](plugins/dsh-dd35-preset/memory.js#L192-L198) reads `state.json` at turn completion and copies these IDs into each transcript header (`- Entities:` in `events/transcripts/NNNN_turn.md`).
+   - [memory.js:6–12](plugins/dsh-dd35-preset/memory.js#L6-L12) parses transcript headers and writes entity IDs into `events/memory_index.json`.
+   - [context-index.js:83–105](plugins/dsh-dd35-preset/context-index.js#L83-L105) parses transcripts from disk to infer presence and compute co-occurrence matrices.
+   - Entity presence is tracked across four distinct locations (`state.json`, markdown transcripts, `events/memory_index.json`, and cached index structures), creating synchronization drift if a turn fails or if files are edited manually.
+
+2. **Location and Scene Environment**
+   - Current location is stored in `state.json` (`scene.location`).
+   - Each transcript duplicates the location in its `- Location:` header line.
+   - `events/memory_index.json` records the location per turn for index lookups.
+   - [context-index.js](plugins/dsh-dd35-preset/context-index.js) parses the location from transcripts to calculate scene transition triggers.
+
+3. **Dual Directory Entity Storage (`player/` vs. `actors/`)**
+   - Entity JSON sheets share an identical schema across `player/<entity>.json` and `actors/<entity>.json`.
+   - Maintaining two separate directories requires precedence checks in `loadAnyEntity`, shadowing detection in [doctor.js:167–168](plugins/dsh-dd35-preset/doctor.js#L167-L168), and deduplication logic in [context-index.js:63–65](plugins/dsh-dd35-preset/context-index.js#L63-L65).
+
+4. **Condition and Status Tracking**
+   - Entity sheets store persistent condition arrays (`conditions`).
+   - Temporary combat conditions and round counters reside in `state.json` (`combat.conditions` or `combat.combatants`), requiring diagnostic checks in [doctor.js:266](plugins/dsh-dd35-preset/doctor.js#L266) to detect orphaned condition states.
+
+---
+
+### Candidate Architectural Revisions
+
+- **On-Demand Derived Indexing**: Compute index structures in memory or treat `events/memory_index.json` as an ephemeral cache rather than committing derived data alongside primary sources.
+- **Unified Entity Directory**: Consolidate `player/` and `actors/` into a single `entities/` directory with a `type: 'pc' | 'npc'` property, removing path precedence resolution and directory shadowing checks.
+- **Authoritative Scene Presence**: Establish `state.json` as the sole write target for active scene presence, treating transcript headers as historical logs rather than inputs for presence calculation.
+
+---
+
+### Proposed Documentation Entry for [handoff.md](docs/dd35/handoff.md)
+
+This item will be added under **Open Architectural Items** in [handoff.md](docs/dd35/handoff.md) and cross-referenced in [scratchpad.md](scratchpad.md):
+
+```markdown
+### Campaign Storage and File Redundancy Revision
+
+- **Objective**: Consolidate overlapping campaign state stored across `state.json`, transcript headers, `events/memory_index.json`, and entity sheets.
+- **Identified Redundancies**:
+  1. *Entity Presence*: Recorded in `state.json`, snapshotted in transcript markdown headers, and duplicated in `events/memory_index.json`.
+  2. *Scene Location*: Stored in `state.json`, transcript headers, and index entries.
+  3. *Entity Directory Partitioning*: Identical schemas split between `player/` and `actors/`, introducing shadowing and deduplication logic.
+  4. *Condition State Partitioning*: Split between sheet-level condition lists and `state.json` combat expiration counters.
+- **Candidate Revisions**:
+  - Evaluate deriving `events/memory_index.json` on-demand or as an ephemeral build artifact rather than committing derived data alongside primary sources.
+  - Consolidate `player/` and `actors/` into a unified `entities/` directory with a `type: 'pc' | 'npc'` field to remove directory precedence resolution.
+  - Establish a single authoritative path for active scene presence to avoid synchronization drift between `state.json` and transcript headers.
+```
+
+---
+
+### Next Actions
+
+1. Append the campaign redundancy item to [handoff.md](docs/dd35/handoff.md) and update [scratchpad.md](scratchpad.md).
+2. Apply the approved comment edits across [doctor.js](plugins/dsh-dd35-preset/doctor.js), [memory.js](plugins/dsh-dd35-preset/memory.js), [context-index.js](plugins/dsh-dd35-preset/context-index.js), and [state-store.js](plugins/dsh-dd35-preset/state-store.js).
+3. Run `node --test plugins/dsh-dd35-preset/tests/*.test.mjs` to confirm all 231 tests pass cleanly.
+
+</compacted-summary>

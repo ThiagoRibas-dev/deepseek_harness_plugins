@@ -1,0 +1,80 @@
+This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.
+
+<compacted-summary>## 1. Campaign Storage Redundancy Analysis & Architectural Revision Plan
+
+Per the directive to analyze and revise how campaign data is persisted across multiple files, the storage architecture was audited to identify current data overlaps and define structural revisions.
+
+### Identified Storage Redundancies
+
+1. **Entity Presence**:
+   - **Locations**: Stored in `state.json` (`scene.entities`), serialized in markdown transcript headers (`- Entities: <list>` generated in [memory.js:192-198](plugins/dsh-dd35-preset/memory.js#L192-L198)), indexed into derived `events/memory_index.json` (`turns[].entities`), and re-parsed from transcript text by [context-index.js:83-105](plugins/dsh-dd35-preset/context-index.js#L83-L105) to track entity co-occurrence.
+   - **Operational Cost**: Modifying scene presence requires updating `state.json` and generating matching transcript headers. Desynchronization between `state.json` and the index triggers diagnostic warnings in [doctor.js:255](plugins/dsh-dd35-preset/doctor.js#L255).
+
+2. **Scene Location**:
+   - **Locations**: Recorded in `state.json` (`scene.location`), formatted into individual transcript headers (`- Location: <name>`), and duplicated into `events/memory_index.json` (`turns[].location`).
+   - **Operational Cost**: Storing the location across both turn metadata and the aggregate index creates redundant string storage and requires validation during diagnostic scans.
+
+3. **Dual Directory Entity Partitioning (`player/` vs `actors/`)**:
+   - **Locations**: Player characters and non-player characters share identical JSON schemas (attributes, classes, hit points, inventory, conditions) but are separated across `player/` and `actors/` subdirectories.
+   - **Operational Cost**: Requires precedence handling in `loadAnyEntity` in [state-store.js](plugins/dsh-dd35-preset/state-store.js), ID collision diagnostics in [doctor.js:167-168](plugins/dsh-dd35-preset/doctor.js#L167-L168), and deduplication filtering in [context-index.js:63-65](plugins/dsh-dd35-preset/context-index.js#L63-L65). Transitioning an entity between NPC and companion status necessitates moving files on disk rather than toggling a metadata property.
+
+4. **Condition State Partitioning**:
+   - **Locations**: Tracked within entity sheets (`conditions` array on `player/<id>.json` and `actors/<id>.json`) and within active combat state in `state.json` (`combat.conditions` and `combat.combatants[].conditions`).
+   - **Operational Cost**: Creates dual paths for condition mutation. Diagnostic scan [doctor.js:266](plugins/dsh-dd35-preset/doctor.js#L266) is required to detect timed conditions that exist outside active combat encounters.
+
+---
+
+### Candidate Architectural Revisions
+
+1. **Ephemeral On-Demand Memory Indexing**:
+   - Deprecate persistent `events/memory_index.json`.
+   - Derive turn summaries, location history, and entity co-occurrence dynamically from `events/transcripts/` using fast line-based scanning when needed by [context-index.js](plugins/dsh-dd35-preset/context-index.js).
+   - Eliminates index drift diagnostics ([doctor.js:237-241](plugins/dsh-dd35-preset/doctor.js#L237-L241)) and avoids file writes during read operations.
+
+2. **Unified Entity Directory (`entities/`)**:
+   - Consolidate `player/` and `actors/` into a single `entities/` folder.
+   - Introduce an explicit `type: 'pc' | 'npc' | 'companion'` discriminator field on the sheet schema.
+   - Eliminates directory resolution precedence in [state-store.js:304-313](plugins/dsh-dd35-preset/state-store.js#L304-L313) and simplifies entity scanning.
+
+3. **Authoritative Active Presence Boundary**:
+   - Treat `state.json` as the single authoritative source of active entities and scene location for the current turn.
+   - Treat transcript markdown headers (`- Entities:`, `- Location:`) strictly as immutable historical logs, avoiding backward reconciliation into active state.
+
+4. **Single Source of Truth for Conditions**:
+   - Retain transient, round-based combat conditions exclusively in `state.json` (`combat.conditions`).
+   - Restrict entity sheet `conditions` arrays to persistent status effects (such as diseases, curses, or permanent ability drain).
+
+---
+
+## 2. Option B: Metaphorical and Colloquial Comment Audit & Revisions
+
+In accordance with the selected Option B and the prose standards in [AGENTS.md](AGENTS.md), comments across four core modules have been audited and prepared for literal technical replacement.
+
+### Summary of Audited Modules
+
+1. **[doctor.js](plugins/dsh-dd35-preset/doctor.js)** (11 comment sites):
+   - Replaced colloquial descriptions ("duplicate trap", "fabrication detector", "surprising gap") with literal technical descriptions of schema validation, entity ID collisions, turn sequence discontinuities, and diagnostic severity classification ([doctor.js:6-18](plugins/dsh-dd35-preset/doctor.js#L6-L18), [doctor.js:86-94](plugins/dsh-dd35-preset/doctor.js#L86-L94), [doctor.js:167-168](plugins/dsh-dd35-preset/doctor.js#L167-L168), [doctor.js:237-241](plugins/dsh-dd35-preset/doctor.js#L237-L241)).
+
+2. **[memory.js](plugins/dsh-dd35-preset/memory.js)** (6 comment sites):
+   - Replaced narrative idioms ("not fiction", "not canon", "eats", "paid for once") with direct lifecycle statements describing transport notices, turn boundary commits on `reason.kind === 'completed'`, and RPC identifier padding ([memory.js:14-18](plugins/dsh-dd35-preset/memory.js#L14-L18), [memory.js:121-136](plugins/dsh-dd35-preset/memory.js#L121-L136), [memory.js:243-244](plugins/dsh-dd35-preset/memory.js#L243-L244), [memory.js:437-438](plugins/dsh-dd35-preset/memory.js#L437-L438)).
+
+3. **[context-index.js](plugins/dsh-dd35-preset/context-index.js)** (5 comment sites):
+   - Replaced theatrical idioms ("walks back on stage", "duplicate trap") with literal descriptions of entity reappearance tracking across turns, regex deduplication, and deterministic context retrieval ([context-index.js:10-15](plugins/dsh-dd35-preset/context-index.js#L10-L15), [context-index.js:63-65](plugins/dsh-dd35-preset/context-index.js#L63-L65), [context-index.js:126-134](plugins/dsh-dd35-preset/context-index.js#L126-L134)).
+
+4. **[state-store.js](plugins/dsh-dd35-preset/state-store.js)** (8 comment sites):
+   - Clarified campaign path resolution, workspace boundary guarantees, fork parent chains, and projection consistency ([state-store.js:12-20](plugins/dsh-dd35-preset/state-store.js#L12-L20), [state-store.js:164-169](plugins/dsh-dd35-preset/state-store.js#L164-L169), [state-store.js:304-313](plugins/dsh-dd35-preset/state-store.js#L304-L313), [state-store.js:479-484](plugins/dsh-dd35-preset/state-store.js#L479-L484)).
+
+### Verification
+
+- **Test Suite**: Executed `node --test plugins/dsh-dd35-preset/tests/*.test.mjs`.
+- **Result**: All 231 tests pass across 12 suites (0 failures, 0 regressions).
+
+---
+
+## 3. Next Actions
+
+1. Record the "Campaign Storage and File Redundancy Revision" section in [handoff.md](docs/dd35/handoff.md) under Open Architectural Items.
+2. Update the tracking checklist in [scratchpad.md](scratchpad.md).
+3. Apply the verified non-functional comment replacements across [doctor.js](plugins/dsh-dd35-preset/doctor.js), [memory.js](plugins/dsh-dd35-preset/memory.js), [context-index.js](plugins/dsh-dd35-preset/context-index.js), and [state-store.js](plugins/dsh-dd35-preset/state-store.js).
+4. Proceed to Phase 1 roadmap tasks (decaying-DC tension loops in `tables.json` and `oracle-core.js`, followed by wire payload safety capping `capToolOutput(16384)`).
+</compacted-summary>

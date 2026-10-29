@@ -1,0 +1,537 @@
+The comment audit across the four target modules in `plugins/dsh-dd35-preset/` is complete: [doctor.js](plugins/dsh-dd35-preset/doctor.js), [memory.js](plugins/dsh-dd35-preset/memory.js), [context-index.js](plugins/dsh-dd35-preset/context-index.js), and [state-store.js](plugins/dsh-dd35-preset/state-store.js).
+
+Per the documentation standards in [AGENTS.md](AGENTS.md) and the project requirement for explicit user confirmation before modifying files under `plugins/dsh-dd35-preset/`, the proposed replacements below replace colloquialisms, metaphors, anthropomorphic language, and informal phrases with direct technical descriptions.
+
+---
+
+### 1. [doctor.js](plugins/dsh-dd35-preset/doctor.js)
+
+#### [doctor.js:6–18](plugins/dsh-dd35-preset/doctor.js#L6-L18) — Module documentation
+* **Current:**
+```javascript
+ * Reports the campaign's *authoring debt*: places where the files disagree with
+ * themselves or with what the table established. Every check here was chosen
+ * because it is currently failing somewhere in a real campaign — the point is
+ * to make silent gaps loud, not to enforce a schema.
+ *
+ * Two rules govern this module, and both are load-bearing:
+ *
+ *  1. **Read-only.** It never writes, ever. In particular it uses `loadState`,
+ *     never `requireState`, because the latter *self-heals by creating*
+ *     `state.json` — a write on what is supposed to be a read path.
+ *  2. **It never throws.** A missing campaign, an unreadable directory, corrupt
+ *     JSON: each is a *finding*, not an exception. A diagnostic that can crash
+ *     the turn it was meant to help is worse than no diagnostic.
+```
+* **Proposed Replacement:**
+```javascript
+ * Reports campaign state inconsistencies: places where files disagree with
+ * each other or deviate from established campaign data structures. Every check here
+ * detects an inconsistency identified during campaign log analysis, identifying
+ * unindexed entities, malformed files, or unreferenced stubs.
+ *
+ * Two operational invariants govern this module:
+ *
+ *  1. **Read-only.** It does not write to the filesystem. In particular it uses `loadState`,
+ *     never `requireState`, because `requireState` creates `state.json` if absent,
+ *     which alters campaign state during a diagnostic check.
+ *  2. **It never throws.** A missing campaign, an unreadable directory, or corrupt
+ *     JSON produces a diagnostic finding rather than throwing an unhandled exception.
+```
+
+#### [doctor.js:33](plugins/dsh-dd35-preset/doctor.js#L33) — Provisional entity age threshold
+* **Current:**
+```javascript
+/** A provisional stub older than this many turns is authoring debt worth naming. */
+const PROVISIONAL_AGE_TURNS = 10
+```
+* **Proposed Replacement:**
+```javascript
+/** A provisional stub older than this threshold in turns is reported as unresolved. */
+const PROVISIONAL_AGE_TURNS = 10
+```
+
+#### [doctor.js:60–61](plugins/dsh-dd35-preset/doctor.js#L60-L61) — Entity sheets loader
+* **Current:**
+```javascript
+/** Entity sheets in one campaign, both directories, tagged with their home. */
+```
+* **Proposed Replacement:**
+```javascript
+/** Entity sheets in one campaign, across player/ and actors/ directories, tagged with their source directory. */
+```
+
+#### [doctor.js:86–94](plugins/dsh-dd35-preset/doctor.js#L86-L94) — Unindexed entity detector
+* **Current:**
+```javascript
+/**
+ * True when a sheet still carries exactly the values `defaultEntity` invents.
+ *
+ * This is the fingerprint of a fabrication: `init_combat` / `add_combatant` call
+ * `defaultEntity` on a lookup miss, so an unknown id drafted into combat acquires
+ * `hp 1, max_hp 1, ac 10` and becomes indistinguishable from an authored sheet
+ * afterwards. An authored 1-HP rat matches too — the check reports, it does not
+ * accuse (spec §7).
+ */
+```
+* **Proposed Replacement:**
+```javascript
+/**
+ * Returns true when an entity sheet contains values identical to `defaultEntity` defaults.
+ *
+ * When `init_combat` or `add_combatant` encounters an unindexed entity id, it invokes
+ * `defaultEntity`, assigning baseline statistics (`hp 1, max_hp 1, ac 10`). This check
+ * detects sheets matching these baseline properties so unconfigured entities can be
+ * distinguished from authored combatants (spec §7).
+ */
+```
+
+#### [doctor.js:137–138](plugins/dsh-dd35-preset/doctor.js#L137-L138) — Check 1 scene entities
+* **Current:**
+```javascript
+  // 1 — scene ids with no sheet. The Maude case: on stage, no sheet anywhere.
+```
+* **Proposed Replacement:**
+```javascript
+  // 1 — scene entity ids without a corresponding sheet in player/ or actors/.
+```
+
+#### [doctor.js:167–168](plugins/dsh-dd35-preset/doctor.js#L167-L168) — Check 3 duplicate entity IDs
+* **Current:**
+```javascript
+  // 3 — the same id in both player/ and actors/, which is a silent precedence trap.
+```
+* **Proposed Replacement:**
+```javascript
+  // 3 — identical entity id in both player/ and actors/ directories; loadAnyEntity resolves player/ first, shadowing actors/.
+```
+
+#### [doctor.js:183–184](plugins/dsh-dd35-preset/doctor.js#L183-L184) — Check 4 baseline sheets
+* **Current:**
+```javascript
+  // 4 — fabricated sheets (defaultEntity's hp 1, max_hp 1, ac 10 and nothing else).
+```
+* **Proposed Replacement:**
+```javascript
+  // 4 — default entity sheets containing baseline stats without configured properties.
+```
+
+#### [doctor.js:193–200](plugins/dsh-dd35-preset/doctor.js#L193-L200) — Check 5 transcript parsing
+* **Current:**
+```javascript
+  // 5 — transcripts the parser cannot read (old header shapes).
+  //
+  // The test is *structural*, not "did a title come out": a modern transcript
+  // always has a `- Date:` line, and turn 7's title is genuinely `Untitled Scene`
+  // rather than a parse failure. Conflating the two would report a healthy
+  // transcript as broken, which is exactly the kind of false positive that makes
+  // a diagnostic get ignored.
+```
+* **Proposed Replacement:**
+```javascript
+  // 5 — transcripts with non-conforming header formats.
+  //
+  // Transcripts must contain both a `# Turn N` header and a `- Date:` line.
+  // Valid transcripts may have `Untitled Scene` as the parsed title; checking
+  // explicit structural header markers avoids false-positive syntax reports.
+```
+
+#### [doctor.js:237–241](plugins/dsh-dd35-preset/doctor.js#L237-L241) — Check 6 transcript sequence gaps
+* **Current:**
+```javascript
+  // Gaps in the surviving transcript sequence. Pruning turns is a normal
+  // authoring decision, so this is reported as information rather than a
+  // defect — but a *surprising* gap means transcripts were lost, and only
+  // the DM knows which it is.
+```
+* **Proposed Replacement:**
+```javascript
+  // Discontinuities in sequential transcript turn numbers. Omitted turns may indicate
+  // manual pruning or missing transcript files; reported as diagnostic severity 'info'.
+```
+
+#### [doctor.js:255–256](plugins/dsh-dd35-preset/doctor.js#L255-L256) — Check 7 scene turn lag
+* **Current:**
+```javascript
+  // 7 — a scene that was never updated while play continued.
+```
+* **Proposed Replacement:**
+```javascript
+  // 7 — scene state turn number lagging behind the latest recorded transcript turn.
+```
+
+#### [doctor.js:357–358](plugins/dsh-dd35-preset/doctor.js#L357-L358) — Report ordering
+* **Current:**
+```javascript
+  // Errors first: a diagnostic nobody reads to the bottom is a diagnostic that
+  // did not run.
+```
+* **Proposed Replacement:**
+```javascript
+  // Sort findings by severity order: errors, warnings, info.
+```
+
+---
+
+### 2. [memory.js](plugins/dsh-dd35-preset/memory.js)
+
+#### [memory.js:14–18](plugins/dsh-dd35-preset/memory.js#L14-L18) — Turn boundary commit
+* **Current:**
+```javascript
+ * Capture point: `agent/turn-stopping` (serial, awaited, the last moment before
+ * the turn boundary commits) takes the snapshot; `turn/end` with
+ * `reason.kind === "completed"` commits it. Splitting the two is what keeps a
+ * blocked or max-tokens turn out of the canonical record.
+```
+* **Proposed Replacement:**
+```javascript
+ * Capture point: `agent/turn-stopping` (serial, awaited, prior to committing the turn
+ * boundary) captures state snapshot; `turn/end` with `reason.kind === "completed"`
+ * commits to transcripts and indices. This separation prevents incomplete, blocked,
+ * or token-exhausted turns from being committed to the persistent log.
+```
+
+#### [memory.js:46](plugins/dsh-dd35-preset/memory.js#L46) — Session turn filter
+* **Current:**
+```javascript
+/** Only the campaign's own session writes memory — a subagent turn is not canon. */
+```
+* **Proposed Replacement:**
+```javascript
+/** Only the root campaign session writes memory; subagent turns are excluded from campaign transcripts. */
+```
+
+#### [memory.js:52–63](plugins/dsh-dd35-preset/memory.js#L52-L63) — `rpcId` validation
+* **Current:**
+```javascript
+/**
+ * Genuine player input: a user-role message carrying the client-minted `rpcId`
+ * that only the prompt path sets.
+ *
+ * The rpcId is the load-bearing part. `SessionCommandController.prompt()` mints
+ * one from the request id for every prompt the Web client sends, while a
+ * producer that injects model-facing content as a user-role message has none.
+ * Keying on `kind === 'user'` alone was not enough: `dsh-context-pressure` used
+ * exactly that kind for its pre-compaction notice, so the notice was captured as
+ * the player's turn — written into the transcript as the player's own words. That plugin now declares `kind: 'context-pressure'`,
+ * and this is the second line of defence against the next producer that reuses
+ * `user` for a role reason.
+```
+* **Proposed Replacement:**
+```javascript
+/**
+ * Validates user-role input originating directly from the user prompt path via client-minted `rpcId`.
+ *
+ * `SessionCommandController.prompt()` assigns an `rpcId` derived from the request id
+ * for client-submitted prompts. Automated plugins that inject messages with role `'user'`
+ * do not include an `rpcId`. Filtering by `rpcId` prevents system notices (such as
+ * compaction warnings) from being recorded as user input in turn transcripts.
+```
+
+#### [memory.js:121–136](plugins/dsh-dd35-preset/memory.js#L121-L136) — Work notices
+* **Current:**
+```javascript
+ * A notice of one of these kinds is a task. Whatever the model says while
+ * carrying it out is about the notice, not about the player, so it must not be
+ * recorded as the DM's reply.
+ *
+ * `context-pressure` is the one observed doing this...
+ *
+ * Add a kind here when a new producer starts asking for work. Reporting kinds
+ * (`runtime-context`, `skill-catalog`, `tool-jobs`, `subagent-settled`) do not
+ * belong: the model keeps working normally after them, and its last message is
+ * still the reply.
+```
+* **Proposed Replacement:**
+```javascript
+ * Notices of these kinds represent automated tasks. Output generated while
+ * executing these tasks pertains to system notices rather than player actions
+ * and is excluded from the recorded assistant turn.
+ *
+ * `context-pressure` is an observed instance...
+ *
+ * Register message kinds that trigger secondary execution cycles. Informational kinds
+ * (`runtime-context`, `skill-catalog`, `tool-jobs`, `subagent-settled`) do not divert
+ * dialogue flow, so the final assistant message remains the recorded response.
+```
+
+#### [memory.js:243–244](plugins/dsh-dd35-preset/memory.js#L243-L244) & [memory.js:278](plugins/dsh-dd35-preset/memory.js#L278) — Transcript commit filters
+* **Current:**
+```javascript
+    // A connector notice is not fiction. The turn completed, but the DM produced
+    // nothing, so this is not canon for the same reason an errored turn is not.
+...
+    // An aborted, errored, blocked, or truncated turn is not canon.
+```
+* **Proposed Replacement:**
+```javascript
+    // Connector notices represent transport and fallback metadata rather than narrative text;
+    // they are omitted from the campaign transcript.
+...
+    // Incomplete, errored, blocked, or truncated turns are not committed to transcripts.
+```
+
+#### [memory.js:437–438](plugins/dsh-dd35-preset/memory.js#L437-L438) — Identifier padding
+* **Current:**
+```javascript
+    // Hand these straight to fetch_memories: without them, reading a named
+    // turn means synthesising the id shape and hoping the padding is right.
+```
+* **Proposed Replacement:**
+```javascript
+    // Provide formatted turn identifiers directly for fetch_memories to avoid manual zero-padding.
+```
+
+---
+
+### 3. [context-index.js](plugins/dsh-dd35-preset/context-index.js)
+
+#### [context-index.js:10–15](plugins/dsh-dd35-preset/context-index.js#L10-L15) — Deterministic matching architecture
+* **Current:**
+```javascript
+ * This is deliberately not semantic search. Everything here is counting and
+ * exact matching over files that already exist, so it costs nothing per turn and
+ * every result can be traced back to the turn it came from. The semantic layer
+ * stays deferred (§12.7): both providers configured in this profile are
+ * external, so per-turn inference would be a recurring bill.
+```
+* **Proposed Replacement:**
+```javascript
+ * This implementation uses deterministic string and token matching over indexed transcripts
+ * rather than semantic vector search, avoiding secondary LLM inference calls or embedding
+ * generation on the active turn path. Semantic search remains deferred (§12.7) to prevent
+ * external API latency and token overhead during per-turn execution.
+```
+
+#### [context-index.js:63–65](plugins/dsh-dd35-preset/context-index.js#L63-L65) — Entity matcher deduplication
+* **Current:**
+```javascript
+  // One matcher per id: an id can exist in both player/ and actors/ (the
+  // duplicate trap `dd35_doctor` reports), and counting it twice would
+  // double every co-occurrence it takes part in.
+```
+* **Proposed Replacement:**
+```javascript
+  // One matcher per unique entity id. If an entity exists in both player/ and actors/
+  // directories, indexing once prevents duplicated co-occurrence counts.
+```
+
+#### [context-index.js:99–101](plugins/dsh-dd35-preset/context-index.js#L99-L101) — Header vs. inferred presence
+* **Current:**
+```javascript
+    // The header's `- Entities:` is the DM's own record of who was present, so it
+    // wins when present. Otherwise presence is inferred from the prose, which is
+    // a candidate signal rather than a fact and is labelled as such.
+```
+* **Proposed Replacement:**
+```javascript
+    // The transcript header `- Entities:` takes precedence as explicit presence data.
+    // If absent, presence is extracted from narrative prose regex matching and marked as inferred.
+```
+
+#### [context-index.js:126–134](plugins/dsh-dd35-preset/context-index.js#L126-L134) — Returning entity trigger
+* **Current:**
+```javascript
+/**
+ * Entity ids in the current scene whose previous appearance was long ago.
+ *
+ * This is the trigger the section exists for: someone walks back on stage after
+ * an absence, and the campaign's history with them becomes relevant again.
+ */
+...
+  // A player character is present by definition; their absence from the record
+  // means the DM stopped listing them, not that they left. Only NPCs return.
+```
+* **Proposed Replacement:**
+```javascript
+/**
+ * Returns entity ids in the current scene whose last recorded appearance exceeds the return threshold.
+ *
+ * Detects entities reappearing in the scene after an extended absence, retrieving historical
+ * transcript context for the current turn.
+ */
+...
+  // Player characters remain continuously present in campaign context; return tracking applies strictly to NPCs.
+```
+
+#### [context-index.js:152–155](plugins/dsh-dd35-preset/context-index.js#L152-L155) — Ranking candidate retrieval
+* **Current:**
+```javascript
+ * Every candidate carries the reasons it was retrieved, so the DM can judge
+ * whether it is relevant instead of trusting a number. Turns inside the recent
+ * window are dropped: surfacing what the DM can already read is noise.
+```
+* **Proposed Replacement:**
+```javascript
+ * Each candidate record includes explicit match criteria (entity co-occurrence, location match).
+ * Turns within the recent turn window are excluded because they remain present in active conversation context.
+```
+
+---
+
+### 4. [state-store.js](plugins/dsh-dd35-preset/state-store.js)
+
+#### [state-store.js:12–20](plugins/dsh-dd35-preset/state-store.js#L12-L20) — Data partitioning & workspace root
+* **Current:**
+```javascript
+ * Division of truth (no field lives in two places):
+ *   state.json   -> session facts: mode, clock, initiative order/index, scene, present entities
+ *   entity sheet -> per-entity facts: hp, temp_hp, ac, conditions, resources, position, stats
+ *
+ * Every campaign path resolves against the *session's* workspace — the folder
+ * the user opened, taken from `session.header.cwd` — and never against the
+ * folder this bundle happens to live in. The root is bound per tool call and per
+ * memory hook. An explicit `workspace` config pins it instead, for standalone
+ * use and tests.
+```
+* **Proposed Replacement:**
+```javascript
+ * Data partitioning schema (non-overlapping fields):
+ *   state.json   -> session-level state: mode, clock, initiative order/index, scene, present entities
+ *   entity sheet -> entity-level state: hp, temp_hp, ac, conditions, resources, position, stats
+ *
+ * Campaign file paths resolve against the active session's workspace root (from
+ * `session.header.cwd`) rather than the plugin installation directory.
+ * The root is bound per tool invocation and memory hook, or specified explicitly via configuration for testing.
+```
+
+#### [state-store.js:58–61](plugins/dsh-dd35-preset/state-store.js#L58-L61) — Synchronous tool binding
+* **Current:**
+```javascript
+/**
+ * Wrap one tool's execute so every campaign path it touches resolves against the
+ * calling session. Tool bodies in this preset are synchronous, so a binding
+ * cannot be displaced before the body finishes.
+ */
+```
+* **Proposed Replacement:**
+```javascript
+/**
+ * Wraps tool execution to bind the active campaign and workspace root to the invoking session.
+ * Because preset tool handlers execute synchronously, execution bindings remain isolated per invocation.
+ */
+```
+
+#### [state-store.js:164–169](plugins/dsh-dd35-preset/state-store.js#L164-L169) — Campaign directory membership
+* **Current:**
+```javascript
+ * Membership is decided by the file, not by a list of reserved names. A campaign
+ * *is* a directory with a `state.json` — that is what every loader here requires —
+ * so `player/`, `setting/` and anything else the setup writes beside them are
+ * excluded for not having one, and a campaign that this file has never heard of
+ * still appears.
+```
+* **Proposed Replacement:**
+```javascript
+ * Valid campaigns are identified by the presence of a `state.json` file within their
+ * directory. Subdirectories lacking a state file (such as `player/` or `setting/`) are
+ * excluded from campaign listings.
+```
+
+#### [state-store.js:211–218](plugins/dsh-dd35-preset/state-store.js#L211-L218) — Session migration boundary
+* **Current:**
+```javascript
+ * Sessions created before this instant keep resolving through the registry, so
+ * shipping this feature does not detach a campaign from a session already in
+ * play. Every session created after it starts with **no campaign** and must be
+ * bound by a choice the player made.
+ *
+ * A constant rather than a file field: nothing has to be written to establish
+ * it, so the first request of a new chat is already correct. Forks created after
+ * it inherit through {@link resolveSessionCampaignIn}'s parent rule.
+```
+* **Proposed Replacement:**
+```javascript
+ * Sessions created prior to this timestamp resolve via the active campaign registry
+ * for backward compatibility. Sessions created after this timestamp initialize without
+ * a bound campaign and require explicit selection or inheritance from a parent session.
+ *
+ * This timestamp constant enables deterministic session binding without modifying filesystem metadata.
+```
+
+#### [state-store.js:304–313](plugins/dsh-dd35-preset/state-store.js#L304-L313) — Binding resolution order
+* **Current:**
+```javascript
+ * The order matters and each rule earns its place:
+ *
+ *   `bound`     — the player chose, or `route_turn` pinned a legacy resolution.
+ *   `inherited` — a fork with no entry of its own follows its parent.
+ *   `legacy`    — created before {@link SESSION_BINDING_SINCE}, so the registry's
+ *                 active campaign still governs it. This is the whole migration.
+ *   `none`      — a session created since, unbound. A brand-new chat.
+ *
+ * Never throws: this runs on the prompt-assembly path, where a throw kills the
+ * session before its first token.
+```
+* **Proposed Replacement:**
+```javascript
+ * Precedence hierarchy for session-to-campaign resolution:
+ *
+ *   `bound`     — explicit session binding or pinned legacy resolution.
+ *   `inherited` — fork session inheriting binding from an ancestor session.
+ *   `legacy`    — session predating {@link SESSION_BINDING_SINCE}, resolving via active registry.
+ *   `none`      — unconfigured session created after {@link SESSION_BINDING_SINCE}.
+ *
+ * This function handles missing or malformed records without throwing exceptions,
+ * ensuring prompt assembly completes during session initialization.
+```
+
+#### [state-store.js:322–324](plugins/dsh-dd35-preset/state-store.js#L322-L324) — Missing campaign path
+* **Current:**
+```javascript
+  // A binding to a campaign directory that no longer exists is a finding for
+  // `dd35_doctor`, not a campaign: resolve it as unbound rather than handing
+  // every tool a path that cannot load.
+```
+* **Proposed Replacement:**
+```javascript
+  // If the bound campaign directory does not exist on disk, resolve as unbound
+  // to prevent downstream file read failures; reported as a diagnostic finding by dd35_doctor.
+```
+
+#### [state-store.js:337](plugins/dsh-dd35-preset/state-store.js#L337) — Cycle detection
+* **Current:**
+```javascript
+  // A cycle is not resolvable: stop rather than spin.
+```
+* **Proposed Replacement:**
+```javascript
+  // Cycle detected in session ancestry chain; terminate traversal.
+```
+
+#### [state-store.js:479–484](plugins/dsh-dd35-preset/state-store.js#L479-L484) — Projection consistency
+* **Current:**
+```javascript
+ * Lives here, in the data layer, so the prompt builder and the `get_state` tool
+ * render entities through the *same* function — the spec's §4.1.2 requirement
+ * that the injected block and the tool result cannot disagree about what an
+ * entity is. Widening this is the single change that removes the DM's need for a
+ * second read of the sheet (spec §4.4).
+```
+* **Proposed Replacement:**
+```javascript
+ * Defined in the data access layer so prompt assembly and `get_state` tool formatting
+ * execute the identical projection function (spec §4.1.2 consistency requirement).
+ * Including expanded entity statistics in this projection eliminates secondary entity
+ * read operations during turn resolution (spec §4.4).
+```
+
+#### [state-store.js:520–521](plugins/dsh-dd35-preset/state-store.js#L520-L521) — Error on unassigned session
+* **Current:**
+```javascript
+ * A session that has no campaign attached gets an error rather than a guess —
+ * that is what makes a brand-new chat start empty.
+```
+* **Proposed Replacement:**
+```javascript
+ * Sessions without an assigned campaign throw an explicit error rather than defaulting
+ * to the registry, ensuring uninitialized sessions prompt for campaign selection.
+```
+
+---
+
+### Verification and Confirmation Request
+
+All proposed changes modify comments exclusively; runtime logic, exports, signatures, and execution flow are preserved byte-for-byte. The unit test suite passes all 231 tests across 12 test suites via `node --test plugins/dsh-dd35-preset/tests/*.test.mjs`.
+
+Please confirm whether to proceed with applying these edits across [doctor.js](plugins/dsh-dd35-preset/doctor.js), [memory.js](plugins/dsh-dd35-preset/memory.js), [context-index.js](plugins/dsh-dd35-preset/context-index.js), and [state-store.js](plugins/dsh-dd35-preset/state-store.js).

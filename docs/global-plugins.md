@@ -38,6 +38,7 @@ it belongs here.
 |---|---|---|---|---|
 | [GP-1](#gp-1--kokoro-tts-a-spoken-reply-mode) | Kokoro TTS: a spoken-reply mode | P2 | ~3–5 days | `WIP` *(phase 4a reverted)* |
 | [GP-2](#gp-2--expose-tts-as-a-standard-server-api) | Expose TTS as a standard server API | P2 | ~1–2 days | `DONE` *(host half)* |
+| [GP-3](#gp-3--global-memory--hybrid-retrieval-service) | Global Memory & Hybrid Retrieval Service | P1 | ~3–4 days | `WIP` *(design settled)* |
 
 > **⚠ Phase 4a was reverted after it corrupted two session logs.** The per-chat preference is no longer a session
 > projection: `session.append('tts/preference', …)` wrote an event type the harness does not know, and the append
@@ -1647,4 +1648,195 @@ complete phrase exists.
 **Still unverified, and the next single check:** the exact shape of `AssistantStreamFrame` — which field carries the
 text delta. The union lives in `packages/llm/llm/src/assistant-stream.ts`, and one read settles it.
 
+---
 
+## GP-3 — Global Memory & Hybrid Retrieval Service
+
+**Priority P1 · Effort ~3–4 days · Status `SHIPPED` — profile bundle implemented; the ONNX weights download on demand through `POST /api/memory/prepare-embedder`**
+
+### What it is
+
+A profile-global Cordis bundle (`plugins/dsh-memory`) supplying unified, hybrid memory and retrieval across every preset and session in DeepSeek Harness.
+
+It decouples memory persistence, extraction, and semantic search from the main conversational agent loop. Autonomous multi-turn reflection loops cause latency compounding, transcript pollution, and tool drift on small hosts. GP-3 replaces them with single-step, deterministic pipelines:
+
+$$\text{[Fixed Instructions]} + \\text{[Target Context]} \\xrightarrow{\\text{Strict JSON Schema}} \\text{[Deterministic Tool / DB Execution]}$$
+
+### Host Hardware Constraints
+
+As established in [`docs/global-plugins.md:117–121`](docs/global-plugins.md#L117-L121), the target host runs on a 2-core CPU without AVX-512 VNNI:
+- `onnxruntime` INT8 kernels are slow on this architecture.
+- Embedding and LLM extraction passes must never block the user's turn reply path.
+- Prompt prefix caching must be preserved: dynamic recall context must be placed between the user message and the assistant turn, avoiding invalidation of the cached system prompt prefix.
+
+### Multi-Tier Architecture & Delivery Channels
+
+| Tier | Name | Storage / Lifecycle | Delivery Channel | Controls |
+|---|---|---|---|---|
+| **Tier 1** | Core Memories | `core_memories` table. Persistent instructions, evolving behavioral rules, user preferences. | Injected into `systemPrompt.section` (order 110, cached static prefix). | Agent tools (`manage_core_memory`), plus a **dedicated Web UI tab** alongside Chat and Trajectory for manual user editing. |
+| **Tier 2** | Passive Recall | `memories` table (filtered by namespace). Dynamic episodic facts from past turns. | Injected as runtime context between the user message and assistant turn (capped at 3–5 items, ~350 tokens) to preserve prompt prefix cache. | Configurable per-preset pre-turn trigger engine (fast regex/entity match or single-step SLM probe query generator). |
+| **Tier 3** | Active Tool Search | `memories` + `corpus_chunks` tables. | Direct tool results in agent turn step. | Agent tools: `search_memories`, `store_memory`, `search_reference`. |
+| **Tier 4** | Offline Corpus | `corpus_chunks` table. Static compendiums, rules, codebase docs, world lore. | Searched via `search_reference` or hybrid retrieval. | Ingestion scripts (`scripts/ingest-corpus.mjs`), chunked ~1,800 chars with 200 char overlap. |
+
+### Storage Schema (`$DSH_HOME/storages/memory.db`)
+
+All data resides in a local SQLite database:
+1. `memories`: Episodic records (`id`, `namespace`, `content`, `summary`, `tags`, `status` [provisional/canon/rejected], `turn_ref`, `embedding` [float16 BLOB], `created_at`).
+2. `corpus_chunks`: Knowledge base segments (`id`, `collection`, `source_path`, `chunk_index`, `title`, `content`, `text_ratio`, `embedding` [float16 BLOB], `updated_at`).
+3. `core_memories`: Persistent instructions (`id`, `namespace`, `key`, `directive`, `priority`, `updated_at`, UNIQUE(`namespace`, `key`)).
+4. `memories_fts` & `corpus_fts`: SQLite FTS5 virtual tables using `tokenize = 'porter unicode61'`.
+
+### Embedding & Hybrid Ranking (DigUp Adaptation)
+
+- **Text Encoder**: `onnx-community/embeddinggemma-2-ONNX` (modular 270M text backbone; audio/vision configs nulled; 8,192 token context window; MRL truncated to 256-d float16 BLOBs = 512 bytes per chunk). Fallback: `all-MiniLM-L6-v2` (384-d).
+- **Task Prefixing**:
+  - Search queries: `task: search result | query: <text>`
+  - Document/memory chunks: `title: <title|none> | text: <text>`
+- **Text Gating**: Chunks with $< 20\%$ alphabetic characters among non-whitespace are flagged `fts_only = true` and skip vector embedding.
+- **Query Z-Score Normalization**: For each query, calculate mean $\mu$ and standard deviation $\sigma$ across candidate cosine similarities. Compute $z = \frac{s - \mu}{\sigma}$.
+- **Candidate Gate**: Candidate admitted if $z \ge 2.0 \lor \text{coverage} \ge 0.50$.
+- **Fusion Scoring**: $\text{Score} = \max(z, 0) + 2.0 \times (\text{coverage})^{1.5} + \text{type\_bonus}$. Identifier-heavy queries: $\text{Score}_{\text{ID}} = 0.5 \times \max(z, 0) + 4.0 \times (\text{coverage})^{1.5}$. Max 1 hit per source file.
+
+### Interfaces & Integration
+
+1. **Cordis In-Process Service (`ctx.memory`)** [IMPLEMENTED in `plugins/dsh-memory/plugin.js`]:
+   - Registered at profile level via `plugins/dsh-memory/plugin.js` (`apply` function).
+   - Public service: `MemoryService` exposing `store`, `search`, `searchMemories`, `searchReference`, `getCoreMemories`, `setCoreMemory`, `deleteCoreMemory`, `listMemories`, `storeMemory`, `status`.
+   - Defensively bounded (`MAX_SEARCH_LIMIT = 20`, `MAX_TOOL_LIST_RESULTS = 100`).
+2. **Local HTTP REST Server (`http://127.0.0.1:3180`)** [IMPLEMENTED in `plugins/dsh-memory/route.js` + `plugin.js`]:
+   - Mounted through deferred `ctx.inject(['webServer'], ...)` so a webServer that arrives late is not a silent 404; a standalone `node:http` server on `127.0.0.1:3180` covers headless environments.
+   - Endpoints: `POST /api/memory/search`, `POST /api/memory/store`, `GET /api/memory/core`, `POST /api/memory/core`, `DELETE /api/memory/core`, `GET /api/memory/status`, `POST /api/memory/prepare-embedder`.
+   - Pure dispatcher (`routeRequest` → `{status, headers, body}` with a Buffer body) behind a thin `node:http` adapter, so every branch is testable without a server.
+3. **Agent MCP Tools**:
+   - `search_memories`, `store_memory`, `manage_core_memory`, `search_reference`.
+4. **Web surfaces** [IMPLEMENTED in `plugins/dsh-memory/client.js`]:
+   - **Settings** (`settings.plugins.tab`, id `memory-core`) is the configuration surface: the Core Memories editor, the Embedding Model card, and the Vector index card.
+   - **A Memory tab in the right Sidebar** is the working surface, beside the file browser and the terminal, because managing corpus documents is a session activity rather than a preference. It is a page-type tab: `ctx.sidebarRightTabs.register({ id: '@local/dsh-memory', kind: 'memory', title, keepMounted: true, guide: [...] })` with a body seat (`sidebar.right.pane.tab`) and a title seat (`sidebar.right.pane.tab.title`), both keyed by the type id. It carries corpus search, document upload, the ingestion folder with per-file Re-index and Delete, the indexed sources with Forget, and the vector report with Re-embed and Drop.
+   - Both are plain React (`React.createElement`) with inline styles and `--dsw-alias-*` tokens. The credential arrives through the injected `window.__DSH_MEMORY__`, never a literal.
+5. **Turn Lifecycle Hooks** [IMPLEMENTED in `plugins/dsh-memory/plugin.js`]:
+   - `agent/pre-step` (waterfall, `prepend`) runs one bounded hybrid search over core and episodic memories, caps the injected block at three items, and appends one source-tagged message (`{ kind: 'system', plugin: 'memory', form: 'passive-recall' }`).
+   - `agent/turn-stopping` (serial) reads the last assistant message and hands one bounded proposal to the store as `provisional`; embedding happens off-cycle, never on the reply path.
+
+### Embedder Setup (download on demand)
+
+The ONNX model is **not** vendored and **not** hardcoded. `embedding.js` takes a
+`modelPath` and refuses to initialise without one; `plugin.js` owns the pinned
+manifest and the download, mirroring the `dsh-tts` prepare flow.
+
+- **Manifest** (`plugins/dsh-memory/assets.json`): the repository, the pinned
+  revision `daa72c51243991dfcaf9f9137d2c573d8f7790c0`, and a real sha256 for every
+  file. LFS digests come from the tree API's `oid`; non-LFS files were downloaded
+  from that revision and hashed locally. Four variants are pinned (`q8`, `q4f16`,
+  `fp16`, `fp32`), each pairing its ONNX graph with the `.onnx_data` external
+  weights that the graph cannot load without.
+- **Cache**: `$DSH_HOME/models/embeddinggemma-2-ONNX/`, or `config.modelsPath`
+  when a deployment keeps weights elsewhere.
+- **Download** (`plugins/dsh-memory/download.js`): verify an existing file by
+  size, then sha256; stream into a `.part` file while hashing; abort on a byte
+  overrun; publish with an atomic rename. An asset whose digest is still a
+  placeholder is **refused** rather than trusted.
+- **Interface**: `GET /api/memory/status` reports phase, reason, verified-pin
+  state, per-file cache counts, and the variant catalogue for the variant asked
+  about; `POST /api/memory/prepare-embedder` starts the download and returns `202`
+  with the state at call time. Preparation is fire-and-forget, so a click never
+  blocks a turn, and the deterministic embedder covers every request until the
+  model is cached. Asking to prepare an already-complete cache does not
+  re-download.
+- **Costs** (disk, shared tokenizer included): `q8` 346 MB, `q4f16` 190 MB,
+  `fp16` 575 MB, `fp32` 1.12 GB. `tokenizer.json` alone is 32 MB because the
+  vocabulary is 262k entries.
+
+### Corpus Ingestion (four entry points, one engine)
+
+Documents enter the corpus four ways. All four run through the same engine
+(`plugins/dsh-memory/ingest.js`), so a document is chunked, hashed, and
+deduplicated identically no matter who supplied it.
+
+| Entry point | Who starts it | Identity | Origin recorded |
+|---|---|---|---|
+| Workspace CLI | a person or a script | path, relative to `--root` when given | `workspace` |
+| `ingest_reference` tool | the model, mid-session | caller label, else `session:<id>/<hash12>` | `session` |
+| Transcript capture | the `agent/turn-stopping` hook | `session:<id>/turn-<n>` | `transcript` |
+| Reference documents card | a person, through the UI | `<inbox>/<collection>/<filename>` | `upload` |
+
+**Re-ingestion is decided by content.** The sha256 of the text is compared with
+the hash recorded for that `(collection, source_path)` on the previous run, and a
+match skips the source entirely. Size and mtime were the cheaper test and the
+wrong one: an edit that preserved both would be missed, and a `touch` would
+re-embed everything. `--force` overrides the skip.
+
+**The registry** (`corpus_sources`, schema v2) holds one row per ingested source
+with `content_hash`, `origin`, `namespace`, `bytes`, `chunk_count`, and
+`ingested_at`. It sits beside `corpus_chunks` rather than as a column on them,
+because a source's hash describes the whole document and a chunk has no document
+to hash. Deleting a source clears its chunks **and** its row, so a source with no
+chunks cannot keep a hash that makes the next run skip it.
+
+**Chunking** (`chunker.js`): ~1,800 characters with ~200 characters of overlap,
+cut on paragraph breaks first, then sentence ends, then whitespace. A piece too
+small to stand alone — a lone heading, a one-line note — rides with its neighbour
+instead of becoming a 12-character chunk. The previous chunk's tail is carried
+forward as overlap, advanced to a word boundary. One source is capped at 500
+chunks, and a capped run says so.
+
+**Bounds**, so one bad input cannot run away: a source is capped at 2 MB, a walk
+at 2,000 files, a transcript at 16,000 characters, and `ingest_reference` input
+at 200,000 characters. A file whose extension is not in the allowlist is skipped,
+and a file whose first kilobyte contains a NUL byte is refused as binary.
+
+**The ingestion folder** is `$DSH_HOME/memory-inbox` (`config.ingestFolder`, or
+`--inbox` for the CLI). An upload is written there **first** and indexed second,
+so an indexing failure still leaves a durable file that the next CLI run picks
+up. Upload filenames are reduced to a safe basename before use, a traversal
+collection falls back to `uploads`, and supported extensions are enforced before
+anything reaches disk.
+
+**Commands and endpoints**
+
+```sh
+node scripts/ingest-corpus.mjs --collection docs --root . docs/ README.md
+node scripts/ingest-corpus.mjs --dry-run --collection docs docs/   # plan, write nothing
+node scripts/ingest-corpus.mjs --inbox --collection uploads        # index UI uploads
+node scripts/ingest-corpus.mjs --list --collection docs            # what is indexed
+```
+
+- `POST /api/memory/corpus/upload` — `{ filename, content | contentBase64, collection, title }`; writes to the inbox, indexes, answers `201`.
+- `GET /api/memory/corpus/sources` — ingested sources (capped at 100) plus the inbox contents.
+- `ingest_reference` — the session-level tool, capped at 200,000 characters.
+- Transcript capture is on by default and switched off with `captureTranscripts: false`. Subagent sessions are never captured; their turns are scaffolding, not the session's record.
+
+### Vector Provenance (which encoder produced this vector)
+
+Cosine similarity only means something between vectors from the **same network at
+the same dimension**. Every stored vector therefore carries an `embedding_model`
+tag (`embeddinggemma-2@256`), and dense retrieval joins only vectors whose tag
+matches the active encoder's. A vector from another space is not scored badly —
+it is left out of the dense leg entirely, and FTS5 still finds the row.
+
+**The tag names the network and the dimension, never the quantisation file.**
+`q8`, `q4f16`, `fp16`, and `fp32` are the same network at different precision, so
+they share a space: switching between them on this 2-core host is a legitimate
+speed experiment and must not discard a corpus of good vectors. Changing network
+(`embeddinggemma-2@256` → `all-MiniLM-L6-v2@384`) is the case that invalidates
+them.
+
+**Nothing is re-embedded automatically.** `GET /api/memory/status` reports
+`vectors.foreign` (from another encoder) and `vectors.missing` (no vector at all)
+separately, because the remedies differ, and then stops. Re-embedding a corpus is
+minutes of CPU, so it stays an explicit action:
+
+- `--vector-status` — report the encoders on file and what is unusable.
+- `--purge-vectors` — drop vectors this encoder cannot use. Every row keeps its
+  text and stays keyword-searchable; only the incomparable vector goes. This is
+  the cheap remedy, and it is what makes a switch non-destructive.
+- `--reembed` — regenerate vectors for the active encoder, in bounded steps that
+  repeat until nothing is left.
+- `POST /api/memory/vectors/reembed` (`{ limit }`) and
+  `POST /api/memory/vectors/purge`.
+- The settings card's **Vector index** panel shows the same counts and offers both
+  buttons.
+
+A vector stored before tags existed counts as **foreign**, not as trusted: its
+space is unknown, which is exactly what the reader needs to know. The column is
+added to existing databases by an idempotent `PRAGMA table_info` migration, so a
+v2 database opens as v3 with its rows intact.

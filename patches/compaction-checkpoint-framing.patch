@@ -1,0 +1,29 @@
+--- a/packages/compaction/compaction-basic/src/summarizer.ts
++++ b/packages/compaction/compaction-basic/src/summarizer.ts
+@@ -53,7 +53,7 @@
+   '- [precisely what was in progress at this checkpoint]',
+   '',
+   '## Next Step',
+-  '- [the single next action, directly in line with the most recent request, or "(none)"]',
++  '- [what would have happened next when this span ended, stated as fact; "(none)" if nothing was pending]',
+   '',
+   '## Critical Context',
+   '- [decisions and their rationale, constraints, user preferences, open questions, data needed to continue]',
+@@ -61,6 +61,8 @@
+   'Rules:',
+   '- Write concise English engineering prose. Preserve exact file paths, commands, error strings, identifiers, numeric values, function signatures, and syntax fragments.',
+   '- Capture user feedback and explicit instructions faithfully, especially corrections.',
++  '- Describe an earlier state. Never address the reader with an instruction, a request for approval, or a question: do not write "await the user", "ask the user to confirm", "you must" or "let me know". Record what was awaited, what had already been decided, and what stayed open.',
++  '- State which choices the conversation had already settled, so a later model does not re-open them.',
+   '- Do NOT mention this summarization request or that the context was compacted.',
+   '- Output only the checkpoint text: do not call any tool or take any other action.',
+   `- If the conversation already contains a ${SUMMARY_OPEN_TAG} block, it is a PRIOR checkpoint. Do not copy it forward verbatim: preserve still-true facts, drop stale ones, and merge newer information into a single consolidated summary under the same structure.`,
+@@ -68,7 +70,7 @@
+ 
+ /** Framing that makes the replacement user message established context. */
+ const CHECKPOINT_PREAMBLE =
+-  'This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.'
++  'This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. It describes an earlier state: the messages that follow supersede it, and the most recent user message defines the task. Treat the captured context as background, build on it without restating it, and do not re-offer a choice the conversation has already settled. Do not acknowledge this checkpoint.'
+ 
+ /**
+  * The replayed conversation surface the summarizer condenses. Reproducing the

@@ -22,7 +22,7 @@
  * Run from the bundle folder with `node --test`.
  */
 import { strict as assert } from 'node:assert'
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -348,6 +348,53 @@ test('route_turn routes a bound session to the recap, and later turns to gamepla
   assert.equal(run('route_turn', {}, session).phase, 'gameplay')
 })
 
+// ---- the setup phase -----------------------------------------------------
+//
+// A campaign directory can exist with no turn ever captured: the sheets are
+// written, the setting is chosen, and nothing has happened yet. `gameplay` and
+// `fresh_session` both read as "continue", so a campaign in that state used to
+// open its first scene before the player had agreed to a starting framework.
+
+/** Rewrite a fixture campaign's state file, then return a session bound to it. */
+function unplayed({ mutate } = {}) {
+  const root = workspace({ active: 'seventh_moon' })
+  const file = join(root, 'campaign', 'seventh_moon', 'state.json')
+  const state = JSON.parse(readFileSync(file, 'utf8'))
+  state.scene.status = 'inactive'
+  mutate?.(state)
+  writeFileSync(file, JSON.stringify(state, null, 2))
+  const session = newSession('s-new', { cwd: root })
+  run('set_active_campaign', { identifier: 'seventh_moon' }, session)
+  return { root, session }
+}
+
+test('route_turn returns setup for a campaign with no captured turn', () => {
+  const { session } = unplayed({ mutate: (state) => { delete state.last_turn } })
+  const result = run('route_turn', { first_message: true }, session)
+  assert.equal(result.phase, 'setup')
+  assert.match(result.hint, /starting framework/)
+})
+
+test('route_turn returns setup when last_turn is explicitly null', () => {
+  const { session } = unplayed({ mutate: (state) => { state.last_turn = null } })
+  assert.equal(run('route_turn', {}, session).phase, 'setup')
+})
+
+test('an active scene keeps its normal phases even with no captured turn', () => {
+  // The scene being active is the record that the framing was agreed, so the
+  // campaign must not fall back into setup and re-open the interview.
+  const { session } = unplayed({ mutate: (state) => { state.scene.status = 'active' } })
+  assert.equal(run('route_turn', { first_message: true }, session).phase, 'fresh_session')
+})
+
+test('set_mode returns the mode constraints and the skill to load', () => {
+  const { session } = unplayed()
+  const result = run('set_mode', { mode: 'encounter' }, session)
+  assert.equal(result.mode, 'encounter')
+  assert.match(result.constraints, /ENCOUNTER MODE/)
+  assert.match(result.hint, /dd35-encounter-mode/)
+})
+
 test('route_turn pins a legacy session so the registry cannot move it', () => {
   const root = workspace({ campaigns: ['seventh_moon', 'frostmarch'], active: 'seventh_moon' })
   const session = legacySession('s-old', { cwd: root })
@@ -402,5 +449,7 @@ test('create_campaign attaches the campaign to the creating session', () => {
   const created = run('create_campaign', { identifier: 'frostmarch', name: 'Frostmarch' }, session)
   assert.equal(created.attached, true)
   assert.equal(attached(root, session).id, 'frostmarch')
-  assert.equal(run('route_turn', { first_message: true }, session).phase, 'fresh_session')
+  // A brand-new campaign has a state file and no turns: the player has not yet
+  // agreed to a starting framework, so it must not open on a scene.
+  assert.equal(run('route_turn', { first_message: true }, session).phase, 'setup')
 })
