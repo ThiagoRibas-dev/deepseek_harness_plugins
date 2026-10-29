@@ -169,3 +169,33 @@ Consequences:
   for prompt lengths.
 - `exchanges.json.durationMs` is a better latency measure than the session store, and `continuation` says
   whether a request reused the live process.
+
+## Measured after the 1.87.0 switch (2026-10-29)
+
+The tool-call loop is gone. Same session, same history, before and after:
+
+| Turn | Steps | Tool calls | Repeated signatures | Wall |
+|---|---|---|---|---|
+| 54 (1.81.0) | 333 | 341 | **90** | 95.8 min |
+| 56 (1.87.0) | 24 | 23 | **0** | 4.9 min |
+| 57 (1.87.0) | 99 | 102 | **1** | 22.6 min |
+
+Transport underneath turn 57: 59 requests, **all 200**, none refused; duration min 2,599 ms, median 4,275 ms,
+max 39,592 ms, total 529 s — about 39% of the turn's wall time. Body sizes peaked at 249,575 bytes, under the
+~297 KB implied cap, so the prompt budget correctly stayed quiet across 19 dispatches.
+
+Three pauses read as a hang but are not:
+
+1. the compaction dispatch itself — 19.7 s with nothing streaming;
+2. the first post-compaction step — 12.6 s, because it opens a **fresh** CLI conversation and prefills the
+   checkpoint;
+3. then steady 3.0–3.7 s tool steps.
+
+Compaction caused **no refusal** this time. At 12:05 the same event produced a 409 and an `#r1` rotation; at
+15:24 it was accepted as a new conversation. The difference is what the pinned conversation had already
+delivered, which confirms the row-9 reading: a compaction *between* a delivered prefix and its continuation
+is the failing case, not compaction on its own.
+
+Remaining cost is latency, not correctness: 102 tool calls at a 4.3 s median is ~7 minutes of pure provider
+time per turn. Watch `/health` counters (`failed: 11`, `completed: 4` since the restart) before blaming the
+connector for an abrupt end.

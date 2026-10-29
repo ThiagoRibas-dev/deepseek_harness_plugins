@@ -137,3 +137,34 @@ Installed build: `/root/.local/share/pnpm/global/v11/<hash>/node_modules/@rynfar
 - `docs/plugins.md` — prompt-rewriting plugins (`*-scrub`), `plugins.json`
 - `docs/development.md` — build and test
 - Repository: <https://github.com/rynfar/meridian>
+
+## The service runs a local build, not the registry package
+
+`ExecStart` points at the checkout, because Meridian pins an exact `agy` version in a compatibility gate and
+this host runs a different one:
+
+```ini
+ExecStart=/usr/bin/node /export/DownloadsSSD/AI/TEXT/meridian/dist/cli.js
+```
+
+Backup of the previous line: `meridian-agy.service.bak.pnpm`. Confirm with `/health` — `build.source` must read
+`local`; `npm` means the unit is still pointing at the pnpm shim (`/root/.local/share/pnpm/bin/meridian`).
+
+| | |
+|---|---|
+| Clone | `/export/DownloadsSSD/AI/TEXT/meridian` |
+| Branch | `local/agy-1.3.4-compat-v1.87.0` (from tag `meridian-v1.87.0`) |
+| Patch | commit `6db7e3a7` — widen the gate to `1.2.7` **and** `1.3.4`, documented in the clone's `LOCAL-PATCHES.md` |
+| Upgrade | fetch tags, branch from the new tag, cherry-pick the patch commit, `npm ci` if the lockfile moved, `npm run build`, daemon-reload, restart |
+
+Use **npm**, not pnpm: the repo ships `package-lock.json` and declares `packageManager: bun@1.3.11`, so pnpm
+would ignore the lockfile, and pnpm ≥10 skips lifecycle scripts by default. `npm ci` is also faster than
+`npm install` because it skips resolution; skip it entirely when the lockfile has not changed.
+
+`tmp/meridian/patch-agy-gate.mjs` is the fallback for a registry build: it rewrites the gate in the installed
+dist to the version `agy --version` reports, is idempotent, and supports `--dry-run`. It is no longer part of
+the normal upgrade path.
+
+Two operational details: Meridian binds :3457 about eight seconds before it answers, so a `/health` that fails
+right after a restart is not a crash; and `systemctl --user` works from the agent shell only with
+`XDG_RUNTIME_DIR=/run/user/0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus`.
